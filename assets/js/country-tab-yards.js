@@ -849,6 +849,7 @@
 	}
 
 	function bindCountryTab($panel, iso2) {
+		$panel = $($panel || document);
 		var $shell = $panel.find('.wscosm-country-tab-shell');
 		if (!$shell.length) return;
 
@@ -870,8 +871,22 @@
 		}
 	}
 
+	function bindExistingCountryTabs() {
+		$('.wscosm-country-tab-shell').each(function () {
+			var $shell = $(this);
+			var $panel = $shell.closest('.wsp-tab-panel, .wsp-tab-content, .wsp-country-tab-panel');
+			bindCountryTab($panel.length ? $panel : $shell.parent(), $shell.data('iso2') || '');
+		});
+	}
+
 	$(document).on('wsp:tab:loaded', function (e, tabId, iso2, $panel) {
 		if (tabId !== 'courtyard_osm') return;
 		bindCountryTab($panel, iso2);
 	});
+
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', bindExistingCountryTabs);
+	} else {
+		bindExistingCountryTabs();
+	}
 })(jQuery);

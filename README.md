@@ -25,7 +25,7 @@ The important behavior is:
 - PHP 7.4+
 - World Statistics Platform
 - WorldStat Cities
-- WorldStat Ergonomics for courtyard polygon overlays
+- WorldStat Ergonomics for courtyard polygon overlays. The tab still registers without it.
 
 ## How Loading Works
 

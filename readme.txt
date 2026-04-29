@@ -4,7 +4,7 @@ Tags: world statistics, openstreetmap, overpass, leaflet, cities, ergonomics
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.2.7
+Stable tag: 1.2.8
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,7 +32,7 @@ This plugin is designed as an extension for the WorldStat stack:
 * WorldStat Cities
 * WorldStat Ergonomics
 
-WorldStat Ergonomics is optional for basic plugin bootstrapping, but required for courtyard polygon overlays and yard ergonomics popups.
+WorldStat Ergonomics is optional for tab registration, but required for courtyard polygon overlays and yard ergonomics popups.
 
 == OpenStreetMap and Overpass ==
 
@@ -118,6 +118,10 @@ Additional documentation is available in the `docs/` directory:
 * `docs/operations.md`
 
 == Changelog ==
+
+= 1.2.8 =
+* Fixed country tab registration when plugin load order changes after activation.
+* Made WorldStat Ergonomics optional for tab registration; it is still used for courtyard overlays when active.
 
 = 1.2.7 =
 * Added bbox-based local loading for initial map views.

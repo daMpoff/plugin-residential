@@ -3,10 +3,10 @@
  * Plugin Name:       WorldStat — Courtyard OSM Map
  * Plugin URI:        https://example.com/worldstat-courtyard-osm
  * Description:       Расширение World Statistics: карта придомовой среды города (OSM + полигоны из эргономики), без правок базовых плагинов.
- * Version:           1.2.7
+ * Version:           1.2.8
  * Requires at least: 5.8
  * Requires PHP:      7.4
- * Requires Plugins:  world-statistics-platform, worldstat-cities, worldstat-ergonomics
+ * Requires Plugins:  world-statistics-platform, worldstat-cities
  * Author:            Ergonosphera
  * License:           GPL v2 or later
  * Text Domain:       worldstat-courtyard-osm
@@ -18,52 +18,28 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WSCOSM_VERSION', '1.2.7' );
+define( 'WSCOSM_VERSION', '1.2.8' );
 define( 'WSCOSM_FILE', __FILE__ );
 define( 'WSCOSM_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WSCOSM_URL', plugin_dir_url( __FILE__ ) );
 
-if ( ! class_exists( 'WorldStat_Core' ) ) {
-	add_action(
-		'admin_notices',
-		static function () {
-			if ( ! current_user_can( 'activate_plugins' ) ) {
-				return;
-			}
+add_action(
+	'admin_notices',
+	static function () {
+		if ( ! current_user_can( 'activate_plugins' ) ) {
+			return;
+		}
+		if ( ! class_exists( 'WorldStat_Core' ) ) {
 			echo '<div class="notice notice-error"><p><strong>WorldStat Courtyard OSM</strong> requires <strong>World Statistics Platform</strong>.</p></div>';
 		}
-	);
-	return;
-}
-
-if ( ! class_exists( 'WSCities_CPT' ) ) {
-	add_action(
-		'admin_notices',
-		static function () {
-			if ( ! current_user_can( 'activate_plugins' ) ) {
-				return;
-			}
+		if ( ! class_exists( 'WSCities_CPT' ) ) {
 			echo '<div class="notice notice-error"><p><strong>WorldStat Courtyard OSM</strong> requires <strong>WorldStat Cities</strong>.</p></div>';
 		}
-	);
-	return;
-}
-
-/*
- * Эргономика подключается позже по алфавиту плагинов (worldstat-ergonomics после courtyard-osm).
- * Нельзя делать return здесь — иначе не зарегистрируется worldstat_init и вкладка страны не появится.
- */
-if ( ! class_exists( 'WSErgo_Data' ) ) {
-	add_action(
-		'admin_notices',
-		static function () {
-			if ( ! current_user_can( 'activate_plugins' ) ) {
-				return;
-			}
-			echo '<div class="notice notice-warning"><p><strong>WorldStat Courtyard OSM</strong>: для полигонов придомовых из базы активируйте <strong>WorldStat Ergonomics</strong>.</p></div>';
+		if ( ! class_exists( 'WSErgo_Data' ) ) {
+			echo '<div class="notice notice-warning"><p><strong>WorldStat Courtyard OSM</strong>: activate <strong>WorldStat Ergonomics</strong> to show saved courtyard polygons.</p></div>';
 		}
-	);
-}
+	}
+);
 
 require_once WSCOSM_DIR . 'includes/class-wscosm-db.php';
 require_once WSCOSM_DIR . 'includes/class-wscosm-log.php';
@@ -111,6 +87,10 @@ add_action(
 add_action(
 	'worldstat_init',
 	static function () {
+		if ( ! class_exists( 'WorldStat_Extensions' ) ) {
+			return;
+		}
+
 		WorldStat_Extensions::register(
 			[
 				'id'                => 'courtyard_osm',
@@ -120,7 +100,7 @@ add_action(
 				'description'       => 'Карта придомовой среды: OSM (скамейки, освещение, дорожки) и полигоны придомовых из эргономики; вкладка страны.',
 				'icon'              => 'dashicons-location-alt',
 				'requires_platform' => '1.0.0',
-				'depends'           => [ 'cities', 'ergonomics' ],
+				'depends'           => [ 'cities' ],
 			]
 		);
 
