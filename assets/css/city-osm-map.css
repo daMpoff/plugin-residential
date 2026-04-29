@@ -1,0 +1,153 @@
+.wscosm-city-section .wsp-minimap.ergo-map-container {
+	border-radius: 4px;
+	border: 1px solid var(--wsp-border, #e5e7eb);
+	overflow: hidden;
+}
+
+.wscosm-dim-legend__list {
+	margin: 0.5rem 0 0;
+	padding-left: 1.25rem;
+	max-width: 52rem;
+	line-height: 1.5;
+	color: var(--wsp-text-muted, #475569);
+}
+
+.wscosm-ct-label {
+	display: block;
+	margin-bottom: 0.35rem;
+	font-weight: 600;
+}
+
+.wscosm-ct-city-select {
+	margin-bottom: 0.25rem;
+}
+
+.wscosm-ct-stats {
+	margin: 0 0 0.5rem;
+}
+
+.wscosm-scan-progress-row {
+	margin-bottom: 0.65rem;
+}
+
+.wscosm-scan-progress-row[hidden] {
+	display: none !important;
+}
+
+.wscosm-scan-progress__label {
+	font-size: 13px;
+	font-weight: 600;
+	margin-bottom: 0.35rem;
+	color: var(--wsp-text, #334155);
+}
+
+.wscosm-scan-progress {
+	height: 10px;
+	background: var(--wsp-border, #e5e7eb);
+	border-radius: 5px;
+	overflow: hidden;
+}
+
+.wscosm-scan-progress__bar {
+	height: 100%;
+	width: 0;
+	background: #15803d;
+	border-radius: 5px;
+	transition: width 0.2s ease-out;
+}
+
+.wscosm-scan-progress__detail {
+	margin: 0.35rem 0 0;
+	font-size: 12px;
+	color: var(--wsp-text-muted, #64748b);
+}
+
+.wscosm-ct-loading {
+	margin: 0;
+	color: var(--wsp-text-muted, #64748b);
+}
+
+.wscosm-popup {
+	font-size: 12px;
+	max-height: 220px;
+	overflow: auto;
+}
+
+.wscosm-popup-kind {
+	text-transform: uppercase;
+	font-size: 11px;
+	color: #64748b;
+}
+
+.leaflet-top.leaflet-right {
+	z-index: 900;
+}
+
+.wscosm-bldg-legend {
+	margin: 0.5rem 0 0;
+	padding: 0.65rem 0.85rem;
+	max-width: 28rem;
+	font-size: 12px;
+	line-height: 1.35;
+	border: 1px solid var(--wsp-border, #e5e7eb);
+	border-radius: 4px;
+	background: var(--wsp-surface, #fff);
+	color: var(--wsp-text, #334155);
+}
+
+.wscosm-bldg-legend__title {
+	font-weight: 600;
+	margin-bottom: 0.4rem;
+	font-size: 13px;
+}
+
+.wscosm-bldg-legend__row {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin: 0.2rem 0;
+}
+
+.wscosm-bldg-legend__sw {
+	display: inline-block;
+	width: 14px;
+	height: 14px;
+	border-radius: 2px;
+	border: 2px solid #475569;
+	flex-shrink: 0;
+}
+
+.wscosm-bldg-legend__txt {
+	flex: 1;
+	min-width: 0;
+}
+
+.leaflet-bar.wscosm-scan-wrap {
+	border: none;
+	box-shadow: none;
+	background: transparent;
+}
+
+.wscosm-scan-btn {
+	display: block;
+	padding: 6px 10px;
+	font-size: 13px;
+	line-height: 1.2;
+	font-weight: 600;
+	cursor: pointer;
+	color: #1e293b;
+	background: #fff;
+	border: 2px solid rgba(0, 0, 0, 0.2);
+	border-radius: 4px;
+	box-shadow: 0 1px 5px rgba(0, 0, 0, 0.2);
+}
+
+.wscosm-scan-btn:hover {
+	background: #f8fafc;
+}
+
+.wscosm-scan-btn:disabled,
+.wscosm-scan-btn.is-busy {
+	opacity: 0.65;
+	cursor: wait;
+}
