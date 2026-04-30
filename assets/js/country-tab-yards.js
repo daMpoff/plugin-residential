@@ -17,6 +17,15 @@
 		return opts;
 	}
 
+	function restPostOptions(data) {
+		var opts = restFetchOptions();
+		opts.method = 'POST';
+		opts.headers = opts.headers || {};
+		opts.headers['Content-Type'] = 'application/json';
+		opts.body = JSON.stringify(data || {});
+		return opts;
+	}
+
 	/** Цвета полигонов/точек по категории building=* (совпадает с порядком в PHP). */
 	var BLDS = {
 		bldg_yes: { fill: '#94a3b8', stroke: '#475569' },
@@ -295,6 +304,15 @@
 		return { kinds: kinds, kindOrder: kindOrder };
 	}
 
+	function simpleHash(s) {
+		var h = 2166136261;
+		for (var i = 0; i < s.length; i++) {
+			h ^= s.charCodeAt(i);
+			h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+		}
+		return (h >>> 0).toString(16);
+	}
+
 	function osmFeatureKey(feat) {
 		if (!feat || !feat.properties) {
 			return '';
@@ -305,16 +323,19 @@
 		if (osmType && osmId) {
 			return String(osmType) + ':' + String(osmId);
 		}
-		return JSON.stringify([props.wscosm_kind || '', feat.geometry || null]);
+		return 'h:' + simpleHash(JSON.stringify([props.wscosm_kind || '', feat.geometry || null]));
 	}
 
-	function fillOsmFeaturesIntoKinds(kinds, kindOrder, ofc, ergoCtx, seenKeys) {
+	function fillOsmFeaturesIntoKinds(kinds, kindOrder, ofc, ergoCtx, seenKeys, featureStore) {
 		if (!ofc || !ofc.features) {
 			return 0;
 		}
 		var added = 0;
 		ofc.features.forEach(function (feat) {
 			var featureKey = osmFeatureKey(feat);
+			if (featureStore && featureKey) {
+				featureStore[featureKey] = feat;
+			}
 			if (seenKeys && featureKey && seenKeys[featureKey]) {
 				return;
 			}
@@ -357,7 +378,7 @@
 		return added;
 	}
 
-	function buildOverlaysObject(m, Ltxt, labels, kinds, kindOrder, yardsGroup, centerGroup) {
+	function buildOverlaysObject(m, Ltxt, labels, kinds, kindOrder, yardsGroup, centerGroup, voronoiGroup) {
 		var overlays = {};
 		overlays[Ltxt.layerCenter || 'Center'] = centerGroup;
 		kindOrder.forEach(function (k) {
@@ -382,6 +403,10 @@
 		if (yardsGroup.getLayers().length > 0) {
 			yardsGroup.addTo(m);
 			overlays[Ltxt.layerYards || 'Yards'] = yardsGroup;
+		}
+		if (voronoiGroup && voronoiGroup.getLayers().length > 0) {
+			voronoiGroup.addTo(m);
+			overlays[Ltxt.voronoiLayer || 'Voronoi preview'] = voronoiGroup;
 		}
 		return overlays;
 	}
@@ -441,6 +466,240 @@
 		u.searchParams.delete('refresh');
 		u.searchParams.delete('progress_id');
 		return u.toString();
+	}
+
+	function walkGeometryCoords(coords, cb) {
+		if (!Array.isArray(coords)) return;
+		if (
+			coords.length >= 2 &&
+			typeof coords[0] === 'number' &&
+			typeof coords[1] === 'number' &&
+			!Array.isArray(coords[0])
+		) {
+			cb(coords[0], coords[1]);
+			return;
+		}
+		coords.forEach(function (c) {
+			walkGeometryCoords(c, cb);
+		});
+	}
+
+	function geometryBounds(geom) {
+		if (!geom || !geom.coordinates) return null;
+		var b = { w: Infinity, s: Infinity, e: -Infinity, n: -Infinity };
+		walkGeometryCoords(geom.coordinates, function (lon, lat) {
+			if (!isFinite(lon) || !isFinite(lat)) return;
+			b.w = Math.min(b.w, lon);
+			b.e = Math.max(b.e, lon);
+			b.s = Math.min(b.s, lat);
+			b.n = Math.max(b.n, lat);
+		});
+		return b.w === Infinity || b.s === Infinity || b.e === -Infinity || b.n === -Infinity ? null : b;
+	}
+
+	function buildingSeedsFromStore(featureStore) {
+		var out = [];
+		Object.keys(featureStore || {}).forEach(function (key) {
+			var feat = featureStore[key];
+			var props = (feat && feat.properties) || {};
+			var kind = props.wscosm_kind || '';
+			if (!isBldgKind(kind)) return;
+			var bounds = geometryBounds(feat.geometry);
+			if (!bounds) return;
+			var lon = (bounds.w + bounds.e) / 2;
+			var lat = (bounds.s + bounds.n) / 2;
+			if (!isFinite(lon) || !isFinite(lat)) return;
+			out.push({
+				key: key,
+				x: lon,
+				y: lat,
+				lon: lon,
+				lat: lat,
+				bounds: bounds,
+				props: props
+			});
+		});
+		out.sort(function (a, b) {
+			return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+		});
+		return out;
+	}
+
+	function expandedSeedBounds(seeds, cityLat, bufferM) {
+		if (!seeds.length) return null;
+		var b = { w: Infinity, s: Infinity, e: -Infinity, n: -Infinity };
+		seeds.forEach(function (seed) {
+			b.w = Math.min(b.w, seed.bounds.w);
+			b.e = Math.max(b.e, seed.bounds.e);
+			b.s = Math.min(b.s, seed.bounds.s);
+			b.n = Math.max(b.n, seed.bounds.n);
+		});
+		if (b.w === Infinity) return null;
+		var latPad = bufferM / 111320;
+		var cos = Math.cos(((cityLat || (b.s + b.n) / 2) * Math.PI) / 180);
+		cos = Math.max(0.15, Math.min(1, Math.abs(cos)));
+		var lonPad = bufferM / (111320 * cos);
+		return { w: b.w - lonPad, s: b.s - latPad, e: b.e + lonPad, n: b.n + latPad };
+	}
+
+	function closeRing(coords) {
+		if (!coords.length) return coords;
+		var first = coords[0];
+		var last = coords[coords.length - 1];
+		if (first[0] !== last[0] || first[1] !== last[1]) {
+			coords.push([first[0], first[1]]);
+		}
+		return coords;
+	}
+
+	function polygonArea(coords) {
+		var sum = 0;
+		for (var i = 0; i < coords.length - 1; i++) {
+			sum += coords[i][0] * coords[i + 1][1] - coords[i + 1][0] * coords[i][1];
+		}
+		return Math.abs(sum / 2);
+	}
+
+	function clipPolygonByBisector(poly, aSeed, bSeed) {
+		var a = 2 * (bSeed.x - aSeed.x);
+		var b = 2 * (bSeed.y - aSeed.y);
+		var c = bSeed.x * bSeed.x + bSeed.y * bSeed.y - aSeed.x * aSeed.x - aSeed.y * aSeed.y;
+		var eps = 1e-12;
+		var out = [];
+		if (!poly.length) return out;
+		function inside(p) {
+			return a * p.x + b * p.y <= c + eps;
+		}
+		function intersect(p1, p2) {
+			var dx = p2.x - p1.x;
+			var dy = p2.y - p1.y;
+			var den = a * dx + b * dy;
+			if (Math.abs(den) < eps) return { x: p2.x, y: p2.y };
+			var t = (c - a * p1.x - b * p1.y) / den;
+			t = Math.max(0, Math.min(1, t));
+			return { x: p1.x + dx * t, y: p1.y + dy * t };
+		}
+		for (var i = 0; i < poly.length; i++) {
+			var cur = poly[i];
+			var prev = poly[(i + poly.length - 1) % poly.length];
+			var curIn = inside(cur);
+			var prevIn = inside(prev);
+			if (curIn) {
+				if (!prevIn) out.push(intersect(prev, cur));
+				out.push(cur);
+			} else if (prevIn) {
+				out.push(intersect(prev, cur));
+			}
+		}
+		return out;
+	}
+
+	function buildVoronoiFeaturesAsync(featureStore, cityLat, cityLng, progress, done) {
+		var seeds = buildingSeedsFromStore(featureStore);
+		if (seeds.length < 2) {
+			done(new Error('not_enough_buildings'));
+			return;
+		}
+		var bounds = expandedSeedBounds(seeds, cityLat, 50);
+		if (!bounds) {
+			var fb = 0.01;
+			bounds = { w: cityLng - fb, s: cityLat - fb, e: cityLng + fb, n: cityLat + fb };
+		}
+		var basePoly = [
+			{ x: bounds.w, y: bounds.s },
+			{ x: bounds.e, y: bounds.s },
+			{ x: bounds.e, y: bounds.n },
+			{ x: bounds.w, y: bounds.n }
+		];
+		var features = [];
+		var i = 0;
+		function tick() {
+			var start = Date.now();
+			while (i < seeds.length && Date.now() - start < 35) {
+				var seed = seeds[i];
+				var poly = basePoly.slice();
+				for (var j = 0; j < seeds.length && poly.length >= 3; j++) {
+					if (i === j) continue;
+					poly = clipPolygonByBisector(poly, seed, seeds[j]);
+				}
+				if (poly.length >= 3) {
+					var ring = closeRing(
+						poly.map(function (p) {
+							return [Number(p.x.toFixed(7)), Number(p.y.toFixed(7))];
+						})
+					);
+					if (ring.length >= 4 && polygonArea(ring) > 1e-12) {
+						var props = seed.props || {};
+						features.push({
+							type: 'Feature',
+							geometry: { type: 'Polygon', coordinates: [ring] },
+							properties: {
+								object_key: seed.key,
+								wscosm_kind: props.wscosm_kind || 'bldg_other',
+								wscosm_osm_el_type: props.wscosm_osm_el_type || '',
+								wscosm_osm_id: props.wscosm_osm_id || 0,
+								name: props.name || '',
+								title: props.name || seed.key,
+								center: { lat: seed.lat, lng: seed.lon },
+								lat: seed.lat,
+								lng: seed.lon
+							}
+						});
+					}
+				}
+				i++;
+			}
+			if (progress) progress(i, seeds.length);
+			if (i < seeds.length) {
+				window.setTimeout(tick, 0);
+			} else {
+				done(null, features);
+			}
+		}
+		tick();
+	}
+
+	function drawVoronoiPreview(voronoiGroup, features) {
+		voronoiGroup.clearLayers();
+		var gj = L.geoJSON({ type: 'FeatureCollection', features: features }, {
+			style: function () {
+				return {
+					fillColor: '#38bdf8',
+					color: '#075985',
+					weight: 0.8,
+					opacity: 0.95,
+					fillOpacity: 0.22
+				};
+			},
+			onEachFeature: function (feat, layer) {
+				var p = feat.properties || {};
+				layer.bindPopup('<strong>' + $('<div/>').text(p.title || p.object_key || '').html() + '</strong>');
+			}
+		});
+		gj.eachLayer(function (layer) {
+			voronoiGroup.addLayer(layer);
+		});
+	}
+
+	function refreshLayersControl(scanCtx) {
+		if (scanCtx.layersControl) {
+			scanCtx.m.removeControl(scanCtx.layersControl);
+			scanCtx.layersControl = null;
+		}
+		var ovl = buildOverlaysObject(
+			scanCtx.m,
+			scanCtx.Ltxt,
+			scanCtx.labels,
+			scanCtx.kinds,
+			scanCtx.kindOrder,
+			scanCtx.yardsGroup,
+			scanCtx.centerGroup,
+			scanCtx.voronoiGroup
+		);
+		scanCtx.layersControl = L.control.layers(null, ovl, {
+			collapsed: false,
+			position: 'topright'
+		}).addTo(scanCtx.m);
 	}
 
 	function addScanControl(container, scanCtx) {
@@ -557,28 +816,15 @@
 								scanCtx.kindOrder,
 								ofc,
 								ergoCtxScan,
-								scanCtx.osmSeenKeys
+								scanCtx.osmSeenKeys,
+								scanCtx.osmFeaturesByKey
 							);
 							if (!added) {
 								return;
 							}
-							if (scanCtx.layersControl) {
-								map.removeControl(scanCtx.layersControl);
-								scanCtx.layersControl = null;
-							}
-							var ovl = buildOverlaysObject(
-								map,
-								scanCtx.Ltxt,
-								scanCtx.labels,
-								scanCtx.kinds,
-								scanCtx.kindOrder,
-								scanCtx.yardsGroup,
-								scanCtx.centerGroup
-							);
-							scanCtx.layersControl = L.control.layers(null, ovl, {
-								collapsed: false,
-								position: 'topright'
-							}).addTo(map);
+							scanCtx.voronoiFeatures = [];
+							scanCtx.voronoiGroup.clearLayers();
+							refreshLayersControl(scanCtx);
 							renderBuildingLegend(
 								container,
 								scanCtx.kindOrder,
@@ -586,6 +832,9 @@
 								scanCtx.Ltxt,
 								scanCtx.labels
 							);
+							if (detailEl) {
+								detailEl.textContent = Ltxt.voronoiRebuildAfterScan || detailEl.textContent;
+							}
 						})
 						.catch(function () {
 							stopProgressPoll();
@@ -626,6 +875,137 @@
 			}
 		});
 		(new ScanCtrl()).addTo(scanCtx.m);
+	}
+
+	function addVoronoiControl(container, scanCtx) {
+		var Ltxt = scanCtx.Ltxt;
+		var VoronoiCtrl = L.Control.extend({
+			options: { position: 'topleft' },
+			onAdd: function (map) {
+				var wrap = L.DomUtil.create('div', 'leaflet-bar wscosm-voronoi-wrap');
+				var buildBtn = L.DomUtil.create('button', 'wscosm-voronoi-btn', wrap);
+				var saveBtn = L.DomUtil.create('button', 'wscosm-voronoi-btn', wrap);
+				buildBtn.type = 'button';
+				saveBtn.type = 'button';
+				buildBtn.title = Ltxt.buildVoronoiHint || '';
+				saveBtn.title = Ltxt.saveVoronoiHint || '';
+				buildBtn.appendChild(document.createTextNode(Ltxt.buildVoronoi || 'Build Voronoi'));
+				saveBtn.appendChild(document.createTextNode(Ltxt.saveVoronoi || 'Save yards'));
+				saveBtn.disabled = !scanCtx.d.canSaveVoronoi;
+				if (!scanCtx.d.canSaveVoronoi) {
+					saveBtn.title = Ltxt.voronoiSaveDisabled || saveBtn.title;
+				}
+
+				function setBusy(on) {
+					buildBtn.disabled = !!on;
+					saveBtn.disabled = !!on || !scanCtx.d.canSaveVoronoi;
+					buildBtn.classList.toggle('is-busy', !!on);
+					saveBtn.classList.toggle('is-busy', !!on);
+				}
+
+				function setProgress(phase, current, total, message) {
+					var row = ensureScanProgressRow(container);
+					var bar = row.querySelector('.wscosm-scan-progress__bar');
+					var labelEl = row.querySelector('.wscosm-scan-progress__label');
+					var detailEl = row.querySelector('.wscosm-scan-progress__detail');
+					row.removeAttribute('hidden');
+					if (bar) {
+						var pct = total > 0 ? Math.max(8, Math.min(100, Math.round((current / total) * 100))) : 12;
+						bar.style.width = pct + '%';
+						bar.style.background = phase === 'error' ? '#b91c1c' : '#15803d';
+					}
+					if (labelEl) labelEl.textContent = message || '';
+					if (detailEl) detailEl.textContent = total > 0 ? current + ' / ' + total : '';
+					if (phase === 'done' || phase === 'error') {
+						window.setTimeout(function () {
+							row.setAttribute('hidden', 'hidden');
+						}, 1200);
+					}
+				}
+
+				function buildPreview() {
+					setBusy(true);
+					setProgress('build', 0, 0, Ltxt.voronoiBuilding || 'Building Voronoi');
+					buildVoronoiFeaturesAsync(
+						scanCtx.osmFeaturesByKey,
+						scanCtx.d.lat,
+						scanCtx.d.lng,
+						function (cur, total) {
+							setProgress('build', cur, total, Ltxt.voronoiBuilding || 'Building Voronoi');
+						},
+						function (err, features) {
+							setBusy(false);
+							if (err || !features || !features.length) {
+								scanCtx.voronoiFeatures = [];
+								setProgress('error', 1, 1, Ltxt.voronoiNoBuildings || Ltxt.voronoiError || 'Error');
+								window.alert(Ltxt.voronoiNoBuildings || Ltxt.voronoiError || 'Error');
+								return;
+							}
+							scanCtx.voronoiFeatures = features;
+							drawVoronoiPreview(scanCtx.voronoiGroup, features);
+							refreshLayersControl(scanCtx);
+							setProgress('done', features.length, features.length, Ltxt.voronoiReady || 'Ready');
+						}
+					);
+				}
+
+				function savePreview() {
+					if (!scanCtx.d.canSaveVoronoi || !scanCtx.d.voronoiSaveUrl) {
+						window.alert(Ltxt.voronoiSaveDisabled || 'Saving is disabled.');
+						return;
+					}
+					var features = scanCtx.voronoiFeatures || [];
+					if (!features.length) {
+						buildPreview();
+						return;
+					}
+					setBusy(true);
+					var batchSize = 250;
+					var offset = 0;
+					var saved = 0;
+					function sendNext() {
+						var batch = features.slice(offset, offset + batchSize);
+						if (!batch.length) {
+							setBusy(false);
+							setProgress('done', features.length, features.length, (Ltxt.voronoiSaved || 'Saved') + ': ' + saved);
+							return;
+						}
+						setProgress('save', offset, features.length, Ltxt.voronoiSaving || 'Saving');
+						fetch(scanCtx.d.voronoiSaveUrl, restPostOptions({ features: batch }))
+							.then(function (r) {
+								if (!r.ok) return Promise.reject(new Error('http'));
+								return r.json();
+							})
+							.then(function (data) {
+								saved += parseInt(data.saved || 0, 10);
+								offset += batch.length;
+								setProgress('save', offset, features.length, (Ltxt.voronoiSaving || 'Saving') + ': ' + saved);
+								window.setTimeout(sendNext, 0);
+							})
+							.catch(function () {
+								setBusy(false);
+								setProgress('error', offset, features.length, Ltxt.voronoiError || 'Error');
+								window.alert(Ltxt.voronoiError || 'Error');
+							});
+					}
+					sendNext();
+				}
+
+				L.DomEvent.disableClickPropagation(wrap);
+				L.DomEvent.on(buildBtn, 'click', function (e) {
+					L.DomEvent.stopPropagation(e);
+					L.DomEvent.preventDefault(e);
+					if (!buildBtn.disabled) buildPreview();
+				});
+				L.DomEvent.on(saveBtn, 'click', function (e) {
+					L.DomEvent.stopPropagation(e);
+					L.DomEvent.preventDefault(e);
+					if (!saveBtn.disabled) savePreview();
+				});
+				return wrap;
+			}
+		});
+		(new VoronoiCtrl()).addTo(scanCtx.m);
 	}
 
 	function renderBuildingLegend(mapEl, kindOrder, kinds, Ltxt, labels) {
@@ -755,9 +1135,20 @@
 				i18n: cfg.i18n || {}
 			};
 			var osmSeenKeys = {};
-			fillOsmFeaturesIntoKinds(kinds, kindOrder, results[1], ergoCtx, osmSeenKeys);
+			var osmFeaturesByKey = {};
+			fillOsmFeaturesIntoKinds(kinds, kindOrder, results[1], ergoCtx, osmSeenKeys, osmFeaturesByKey);
 
-			var overlays = buildOverlaysObject(m, Ltxt, labels, kinds, kindOrder, yardsGroup, centerGroup);
+			var voronoiGroup = L.featureGroup();
+			var overlays = buildOverlaysObject(
+				m,
+				Ltxt,
+				labels,
+				kinds,
+				kindOrder,
+				yardsGroup,
+				centerGroup,
+				voronoiGroup
+			);
 
 			var layersControl = null;
 			if (Object.keys(overlays).length) {
@@ -774,11 +1165,15 @@
 				kinds: kinds,
 				kindOrder: kindOrder,
 				osmSeenKeys: osmSeenKeys,
+				osmFeaturesByKey: osmFeaturesByKey,
+				voronoiGroup: voronoiGroup,
+				voronoiFeatures: [],
 				layersControl: layersControl
 			};
 			if (d.featuresUrl && d.canScanOsm) {
 				addScanControl(container, scanCtx);
 			}
+			addVoronoiControl(container, scanCtx);
 
 			renderBuildingLegend(container, kindOrder, kinds, Ltxt, labels);
 

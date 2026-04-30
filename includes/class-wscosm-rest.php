@@ -12,10 +12,17 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WSCOSM_REST {
 
 	public const NS = 'wscosm/v1';
+	public const META_VORONOI_OBJECT_KEY = 'wscosm_voronoi_object_key';
+	public const META_VORONOI_SOURCE     = 'wscosm_voronoi_source';
 
 	public static function can_live_overpass( int $city_id ): bool {
 		$allowed = current_user_can( 'manage_options' ) || current_user_can( 'edit_post', $city_id );
 		return (bool) apply_filters( 'wscosm_can_live_overpass', $allowed, $city_id );
+	}
+
+	public static function can_edit_city_request( WP_REST_Request $request ): bool {
+		$city_id = (int) $request->get_param( 'id' );
+		return $city_id > 0 && self::can_live_overpass( $city_id );
 	}
 
 	public static function register(): void {
@@ -105,6 +112,23 @@ class WSCOSM_REST {
 					'lng' => [
 						'type'     => 'number',
 						'required' => true,
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/city/(?P<id>\d+)/voronoi-yards',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ self::class, 'save_voronoi_yards' ],
+				'permission_callback' => [ self::class, 'can_edit_city_request' ],
+				'args'                => [
+					'id' => [
+						'type'              => 'integer',
+						'required'          => true,
+						'sanitize_callback' => 'absint',
 					],
 				],
 			]
@@ -430,5 +454,242 @@ class WSCOSM_REST {
 			200,
 			[ 'Cache-Control' => 'private, max-age=120' ]
 		);
+	}
+
+	/**
+	 * Save generated bounded Voronoi cells as WorldStat Ergonomics yards.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public static function save_voronoi_yards( WP_REST_Request $request ) {
+		$city_id = (int) $request->get_param( 'id' );
+		if ( $city_id <= 0 || ! class_exists( 'WSCities_CPT' ) ) {
+			return new WP_Error( 'wscosm_bad_city', 'Invalid city id.', [ 'status' => 400 ] );
+		}
+
+		$post = get_post( $city_id );
+		if ( ! $post || $post->post_type !== WSCities_CPT::SLUG || $post->post_status !== 'publish' ) {
+			return new WP_Error( 'wscosm_not_found', 'City not found.', [ 'status' => 404 ] );
+		}
+
+		if ( ! class_exists( 'WSErgo_CPT' ) ) {
+			return new WP_Error(
+				'wscosm_ergo_missing',
+				'WorldStat Ergonomics is required to save Voronoi yards.',
+				[ 'status' => 409 ]
+			);
+		}
+
+		$params   = $request->get_json_params();
+		$features = isset( $params['features'] ) && is_array( $params['features'] ) ? $params['features'] : [];
+		if ( empty( $features ) ) {
+			return new WP_Error( 'wscosm_empty_voronoi', 'No Voronoi features provided.', [ 'status' => 400 ] );
+		}
+
+		$features     = array_slice( $features, 0, 500 );
+		$saved        = 0;
+		$skipped      = 0;
+		$errors       = [];
+		$prev_suspend = WSErgo_CPT::$suspend_autorecalc;
+		WSErgo_CPT::$suspend_autorecalc = true;
+
+		try {
+			foreach ( $features as $feature ) {
+				if ( ! is_array( $feature ) || ( $feature['type'] ?? '' ) !== 'Feature' ) {
+					++$skipped;
+					continue;
+				}
+
+				$geometry = isset( $feature['geometry'] ) && is_array( $feature['geometry'] ) ? $feature['geometry'] : null;
+				$props    = isset( $feature['properties'] ) && is_array( $feature['properties'] ) ? $feature['properties'] : [];
+				if ( ! self::is_valid_polygon_geometry( $geometry ) ) {
+					++$skipped;
+					continue;
+				}
+
+				$object_key = sanitize_text_field( (string) ( $props['object_key'] ?? '' ) );
+				if ( $object_key === '' ) {
+					$osm_type = sanitize_key( (string) ( $props['wscosm_osm_el_type'] ?? '' ) );
+					$osm_id   = absint( $props['wscosm_osm_id'] ?? 0 );
+					if ( $osm_type !== '' && $osm_id > 0 ) {
+						$object_key = $osm_type . ':' . $osm_id;
+					}
+				}
+				if ( $object_key === '' ) {
+					++$skipped;
+					continue;
+				}
+
+				$center = isset( $props['center'] ) && is_array( $props['center'] ) ? $props['center'] : [];
+				$lat    = isset( $center['lat'] ) ? (float) $center['lat'] : (float) ( $props['lat'] ?? 0 );
+				$lng    = isset( $center['lng'] ) ? (float) $center['lng'] : (float) ( $props['lng'] ?? 0 );
+				if ( $lat < -90 || $lat > 90 || $lng < -180 || $lng > 180 || ( ! $lat && ! $lng ) ) {
+					++$skipped;
+					continue;
+				}
+
+				$title = sanitize_text_field( (string) ( $props['title'] ?? '' ) );
+				if ( $title === '' ) {
+					$name  = sanitize_text_field( (string) ( $props['name'] ?? '' ) );
+					$title = $name !== '' ? $name : sprintf( 'Voronoi yard %s', $object_key );
+				}
+
+				$post_id = self::find_existing_voronoi_yard( $city_id, $object_key );
+				if ( $post_id > 0 ) {
+					$res = wp_update_post(
+						[
+							'ID'         => $post_id,
+							'post_title' => $title,
+						],
+						true
+					);
+				} else {
+					$res = wp_insert_post(
+						[
+							'post_type'   => WSErgo_CPT::SLUG_YARD,
+							'post_status' => 'publish',
+							'post_title'  => $title,
+						],
+						true
+					);
+				}
+
+				if ( is_wp_error( $res ) ) {
+					$errors[] = $res->get_error_message();
+					continue;
+				}
+
+				$post_id  = (int) $res;
+				$geojson  = wp_json_encode( $geometry, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE );
+				$city_key = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_CITY_ID : 'wsosm_city_id';
+				$type_key = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_ENTITY_TYPE : 'wsosm_entity_type';
+				$addr_key = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_ADDRESS_FULL : 'wsosm_address_full';
+				$stat_key = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_STATUS : 'wsosm_status';
+
+				update_post_meta( $post_id, WSErgo_CPT::META_LAT, $lat );
+				update_post_meta( $post_id, WSErgo_CPT::META_LNG, $lng );
+				update_post_meta( $post_id, WSErgo_CPT::META_GEOJSON, is_string( $geojson ) ? $geojson : '' );
+				update_post_meta( $post_id, $city_key, $city_id );
+				update_post_meta( $post_id, $type_key, 'building' );
+				update_post_meta( $post_id, $addr_key, $title );
+				update_post_meta( $post_id, $stat_key, 'voronoi' );
+				update_post_meta( $post_id, self::META_VORONOI_OBJECT_KEY, substr( $object_key, 0, 96 ) );
+				update_post_meta( $post_id, self::META_VORONOI_SOURCE, 'wscosm' );
+
+				if ( isset( $props['wscosm_osm_el_type'] ) ) {
+					update_post_meta( $post_id, 'wscosm_osm_el_type', sanitize_key( (string) $props['wscosm_osm_el_type'] ) );
+				}
+				if ( isset( $props['wscosm_osm_id'] ) ) {
+					update_post_meta( $post_id, 'wscosm_osm_id', absint( $props['wscosm_osm_id'] ) );
+				}
+
+				++$saved;
+			}
+		} finally {
+			WSErgo_CPT::$suspend_autorecalc = $prev_suspend;
+		}
+
+		if ( class_exists( 'WSErgo_Data' ) ) {
+			WSErgo_Data::bust_city_polygons_cache( $city_id );
+		}
+
+		return new WP_REST_Response(
+			[
+				'saved'   => $saved,
+				'skipped' => $skipped,
+				'errors'  => array_slice( $errors, 0, 5 ),
+			],
+			200
+		);
+	}
+
+	private static function find_existing_voronoi_yard( int $city_id, string $object_key ): int {
+		$city_key = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_CITY_ID : 'wsosm_city_id';
+		$q        = new WP_Query(
+			[
+				'post_type'              => WSErgo_CPT::SLUG_YARD,
+				'post_status'            => [ 'publish', 'draft', 'pending', 'private' ],
+				'posts_per_page'         => 1,
+				'fields'                 => 'ids',
+				'no_found_rows'          => true,
+				'update_post_meta_cache' => false,
+				'update_post_term_cache' => false,
+				'meta_query'             => [
+					'relation' => 'AND',
+					[
+						'key'   => $city_key,
+						'value' => $city_id,
+					],
+					[
+						'key'   => self::META_VORONOI_OBJECT_KEY,
+						'value' => substr( $object_key, 0, 96 ),
+					],
+				],
+			]
+		);
+		$ids = array_map( 'intval', (array) $q->posts );
+		if ( ! empty( $ids ) ) {
+			return $ids[0];
+		}
+
+		if ( ! preg_match( '/^([a-z]+):(\d+)$/', $object_key, $m ) ) {
+			return 0;
+		}
+
+		$q = new WP_Query(
+			[
+				'post_type'              => WSErgo_CPT::SLUG_YARD,
+				'post_status'            => [ 'publish', 'draft', 'pending', 'private' ],
+				'posts_per_page'         => 1,
+				'fields'                 => 'ids',
+				'no_found_rows'          => true,
+				'update_post_meta_cache' => false,
+				'update_post_term_cache' => false,
+				'meta_query'             => [
+					'relation' => 'AND',
+					[
+						'key'   => $city_key,
+						'value' => $city_id,
+					],
+					[
+						'key'   => 'wscosm_osm_el_type',
+						'value' => sanitize_key( $m[1] ),
+					],
+					[
+						'key'   => 'wscosm_osm_id',
+						'value' => absint( $m[2] ),
+					],
+				],
+			]
+		);
+		$ids = array_map( 'intval', (array) $q->posts );
+		return empty( $ids ) ? 0 : $ids[0];
+	}
+
+	/**
+	 * @param mixed $geometry GeoJSON geometry.
+	 */
+	private static function is_valid_polygon_geometry( $geometry ): bool {
+		if ( ! is_array( $geometry ) || ! isset( $geometry['type'], $geometry['coordinates'] ) ) {
+			return false;
+		}
+		if ( (string) $geometry['type'] !== 'Polygon' ) {
+			return false;
+		}
+		$rings = $geometry['coordinates'];
+		if ( ! is_array( $rings ) || empty( $rings[0] ) || ! is_array( $rings[0] ) || count( $rings[0] ) < 4 ) {
+			return false;
+		}
+		foreach ( $rings[0] as $pair ) {
+			if ( ! is_array( $pair ) || count( $pair ) < 2 || ! is_numeric( $pair[0] ) || ! is_numeric( $pair[1] ) ) {
+				return false;
+			}
+			$lon = (float) $pair[0];
+			$lat = (float) $pair[1];
+			if ( $lon < -180 || $lon > 180 || $lat < -90 || $lat > 90 ) {
+				return false;
+			}
+		}
+		return true;
 	}
 }

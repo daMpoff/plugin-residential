@@ -30,6 +30,7 @@ This plugin is a World Statistics Platform extension. It adds OSM-based courtyar
 - Exposes feature, scan progress, and yard ergonomics endpoints.
 - Validates city IDs and bbox parameters.
 - Routes requests to local DB reads or authorized Overpass scans.
+- Saves generated Voronoi cells into WorldStat Ergonomics yards.
 
 `includes/class-wscosm-city-map.php`
 
@@ -51,6 +52,7 @@ This plugin is a World Statistics Platform extension. It adds OSM-based courtyar
 - Loads yards and saved OSM data for the country tab map.
 - Adds the protected scan control for users who can scan.
 - Sends live scan requests with `source=live&refresh=1`.
+- Builds bounded Voronoi previews from OSM building centers and saves them in batches.
 
 ## Data Flow
 
@@ -84,6 +86,21 @@ sequenceDiagram
     REST->>REST: convert to GeoJSON
     REST->>DB: upsert features
     REST-->>Browser: GeoJSON FeatureCollection
+```
+
+### Voronoi Yard Save
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant REST as WordPress REST
+    participant Ergo as wsp_yard posts
+
+    Browser->>Browser: Build bounded Voronoi from saved OSM buildings
+    Browser->>REST: POST city/{id}/voronoi-yards
+    REST->>REST: permission check
+    REST->>Ergo: insert/update wsp_yard + wsergo_geojson
+    REST-->>Browser: saved/skipped counts
 ```
 
 ## Layer Kinds

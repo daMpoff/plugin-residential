@@ -112,3 +112,44 @@ Response:
 ```
 
 This endpoint is public because it only reads published city/yard data.
+
+## Save Voronoi Yards
+
+```http
+POST /wp-json/wscosm/v1/city/{id}/voronoi-yards
+```
+
+Persists generated bounded Voronoi cells as `wsp_yard` posts when WorldStat Ergonomics is active.
+
+The request body is JSON:
+
+```json
+{
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Polygon", "coordinates": [] },
+      "properties": {
+        "object_key": "way:123",
+        "wscosm_osm_el_type": "way",
+        "wscosm_osm_id": 123,
+        "center": { "lat": 53.2, "lng": 34.3 }
+      }
+    }
+  ]
+}
+```
+
+The endpoint accepts up to 500 features per request. The frontend sends larger saves in batches.
+
+Response:
+
+```json
+{
+  "saved": 250,
+  "skipped": 0,
+  "errors": []
+}
+```
+
+Permission matches live scans: `manage_options`, `edit_post(city_id)`, or the `wscosm_can_live_overpass` filter.

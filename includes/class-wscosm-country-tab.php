@@ -87,6 +87,7 @@ class WSCOSM_Country_Tab {
 		);
 		$osm_count      = class_exists( 'WSCOSM_Feature_Store' ) ? WSCOSM_Feature_Store::count_for_city( $city_id ) : 0;
 		$yard_ergo_url  = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/yard-ergo-at' );
+		$voronoi_url    = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/voronoi-yards' );
 
 		$means  = self::get_city_yard_dimension_means( $city_id, 250 );
 		$chart  = ! empty( $means ) ? self::build_chart_payload( $means ) : [];
@@ -103,7 +104,10 @@ class WSCOSM_Country_Tab {
 				'yardsUrl'        => $yards_url,
 				'featuresUrl'     => $features_url,
 				'yardErgoAtUrl'   => $yard_ergo_url,
+				'voronoiSaveUrl'  => $voronoi_url,
 				'canScanOsm'      => class_exists( 'WSCOSM_REST' ) ? WSCOSM_REST::can_live_overpass( $city_id ) : false,
+				'canSaveVoronoi'  => class_exists( 'WSCOSM_REST' ) && class_exists( 'WSErgo_CPT' ) ? WSCOSM_REST::can_live_overpass( $city_id ) : false,
+				'hasErgo'         => class_exists( 'WSErgo_CPT' ),
 				'tileUrl'     => 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
 				'tileAttrib'  => '&copy; OpenStreetMap &copy; CARTO',
 				'chart'       => $chart,
@@ -272,6 +276,19 @@ class WSCOSM_Country_Tab {
 					'scanProgressDone'    => __( 'Готово', 'worldstat-courtyard-osm' ),
 					'scanProgressError'   => __( 'Ошибка сохранения', 'worldstat-courtyard-osm' ),
 					'scanProgressCounts'  => __( 'Записей в базу', 'worldstat-courtyard-osm' ),
+					'buildVoronoi'    => __( 'Построить Вороного', 'worldstat-courtyard-osm' ),
+					'buildVoronoiHint'=> __( 'Построить непересекающиеся придомовые участки по всем зданиям OSM на карте', 'worldstat-courtyard-osm' ),
+					'saveVoronoi'     => __( 'Сохранить участки', 'worldstat-courtyard-osm' ),
+					'saveVoronoiHint' => __( 'Сохранить построенные участки в базу WorldStat Ergonomics', 'worldstat-courtyard-osm' ),
+					'voronoiLayer'    => __( 'Вороной: предпросмотр', 'worldstat-courtyard-osm' ),
+					'voronoiNoBuildings' => __( 'Для Вороного нужно минимум два здания OSM. Сначала просканируйте область.', 'worldstat-courtyard-osm' ),
+					'voronoiBuilding' => __( 'Построение Вороного', 'worldstat-courtyard-osm' ),
+					'voronoiReady'    => __( 'Вороной построен', 'worldstat-courtyard-osm' ),
+					'voronoiSaving'   => __( 'Сохранение участков', 'worldstat-courtyard-osm' ),
+					'voronoiSaved'    => __( 'Участки сохранены', 'worldstat-courtyard-osm' ),
+					'voronoiSaveDisabled' => __( 'Для сохранения нужен активный WorldStat Ergonomics и права редактирования города.', 'worldstat-courtyard-osm' ),
+					'voronoiRebuildAfterScan' => __( 'OSM обновлен. Постройте Вороного заново, чтобы включить новые здания.', 'worldstat-courtyard-osm' ),
+					'voronoiError'    => __( 'Не удалось построить или сохранить Вороного.', 'worldstat-courtyard-osm' ),
 					'layerYards'      => __( 'Придомовые (база сайта)', 'worldstat-courtyard-osm' ),
 					'layerBench'      => __( 'Скамейки', 'worldstat-courtyard-osm' ),
 					'layerLight'      => __( 'Фонари', 'worldstat-courtyard-osm' ),

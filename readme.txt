@@ -4,7 +4,7 @@ Tags: world statistics, openstreetmap, overpass, leaflet, cities, ergonomics
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.2.10
+Stable tag: 1.2.11
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -20,6 +20,7 @@ The plugin combines:
 * OpenStreetMap objects from Overpass API;
 * persistent OSM object storage in the WordPress database;
 * bbox-based loading for map viewports;
+* bounded Voronoi courtyard previews that can be saved into WorldStat Ergonomics;
 * a protected live scan action for refreshing OSM data.
 
 On normal page loads the frontend reads OSM features from the local database by viewport bbox. Live Overpass requests are used only for explicit scans or permitted fallback paths, and successful scans are stored in the database for later page loads.
@@ -79,6 +80,7 @@ Main endpoints:
 * `GET /wp-json/wscosm/v1/city/{id}/features`
 * `GET /wp-json/wscosm/v1/scan-progress`
 * `GET /wp-json/wscosm/v1/city/{id}/yard-ergo-at`
+* `POST /wp-json/wscosm/v1/city/{id}/voronoi-yards`
 
 The `features` endpoint accepts `south`, `west`, `north`, `east`, `source`, `refresh`, and `progress_id` parameters.
 
@@ -118,6 +120,10 @@ Additional documentation is available in the `docs/` directory:
 * `docs/operations.md`
 
 == Changelog ==
+
+= 1.2.11 =
+* Added bounded Voronoi courtyard previews from OSM buildings.
+* Added batch saving of generated cells into WorldStat Ergonomics `wsp_yard` polygons.
 
 = 1.2.10 =
 * Keep already visible OSM objects on the map after scanning a new bbox; scan results are merged instead of replacing layers.

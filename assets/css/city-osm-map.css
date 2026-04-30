@@ -151,3 +151,37 @@
 	opacity: 0.65;
 	cursor: wait;
 }
+
+.leaflet-bar.wscosm-voronoi-wrap {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	border: none;
+	box-shadow: none;
+	background: transparent;
+}
+
+.wscosm-voronoi-btn {
+	display: block;
+	padding: 6px 10px;
+	font-size: 13px;
+	line-height: 1.2;
+	font-weight: 600;
+	cursor: pointer;
+	color: #1e293b;
+	background: #fff;
+	border: 2px solid rgba(0, 0, 0, 0.2);
+	border-radius: 4px;
+	box-shadow: 0 1px 5px rgba(0, 0, 0, 0.2);
+	text-align: left;
+}
+
+.wscosm-voronoi-btn:hover {
+	background: #f8fafc;
+}
+
+.wscosm-voronoi-btn:disabled,
+.wscosm-voronoi-btn.is-busy {
+	opacity: 0.65;
+	cursor: wait;
+}
