@@ -295,11 +295,29 @@
 		return { kinds: kinds, kindOrder: kindOrder };
 	}
 
-	function fillOsmFeaturesIntoKinds(kinds, kindOrder, ofc, ergoCtx) {
-		if (!ofc || !ofc.features) {
-			return;
+	function osmFeatureKey(feat) {
+		if (!feat || !feat.properties) {
+			return '';
 		}
+		var props = feat.properties || {};
+		var osmType = props.wscosm_osm_el_type || '';
+		var osmId = props.wscosm_osm_id || '';
+		if (osmType && osmId) {
+			return String(osmType) + ':' + String(osmId);
+		}
+		return JSON.stringify([props.wscosm_kind || '', feat.geometry || null]);
+	}
+
+	function fillOsmFeaturesIntoKinds(kinds, kindOrder, ofc, ergoCtx, seenKeys) {
+		if (!ofc || !ofc.features) {
+			return 0;
+		}
+		var added = 0;
 		ofc.features.forEach(function (feat) {
+			var featureKey = osmFeatureKey(feat);
+			if (seenKeys && featureKey && seenKeys[featureKey]) {
+				return;
+			}
 			var kind = (feat.properties && feat.properties.wscosm_kind) || 'bldg_other';
 			if (!kind || kind === 'other') {
 				kind = 'bldg_other';
@@ -331,20 +349,12 @@
 			gj.eachLayer(function (layer) {
 				target.addLayer(layer);
 			});
-		});
-	}
-
-	function removeOsmLayersFromMap(map, kinds, kindOrder) {
-		kindOrder.forEach(function (k) {
-			var g = kinds[k];
-			if (!g) {
-				return;
+			if (seenKeys && featureKey) {
+				seenKeys[featureKey] = true;
 			}
-			if (map.hasLayer(g)) {
-				map.removeLayer(g);
-			}
-			g.clearLayers();
+			added++;
 		});
+		return added;
 	}
 
 	function buildOverlaysObject(m, Ltxt, labels, kinds, kindOrder, yardsGroup, centerGroup) {
@@ -537,20 +547,25 @@
 							if (!feats.length) {
 								return;
 							}
-							if (scanCtx.layersControl) {
-								map.removeControl(scanCtx.layersControl);
-								scanCtx.layersControl = null;
-							}
-							removeOsmLayersFromMap(map, scanCtx.kinds, scanCtx.kindOrder);
-							var shell = createEmptyKindGroups();
-							scanCtx.kinds = shell.kinds;
-							scanCtx.kindOrder = shell.kindOrder;
 							var ergoCtxScan = {
 								cityId: scanCtx.d.cityId,
 								yardErgoAtUrl: scanCtx.d.yardErgoAtUrl || '',
 								i18n: cfg.i18n || {}
 							};
-							fillOsmFeaturesIntoKinds(scanCtx.kinds, scanCtx.kindOrder, ofc, ergoCtxScan);
+							var added = fillOsmFeaturesIntoKinds(
+								scanCtx.kinds,
+								scanCtx.kindOrder,
+								ofc,
+								ergoCtxScan,
+								scanCtx.osmSeenKeys
+							);
+							if (!added) {
+								return;
+							}
+							if (scanCtx.layersControl) {
+								map.removeControl(scanCtx.layersControl);
+								scanCtx.layersControl = null;
+							}
 							var ovl = buildOverlaysObject(
 								map,
 								scanCtx.Ltxt,
@@ -739,7 +754,8 @@
 				yardErgoAtUrl: d.yardErgoAtUrl || '',
 				i18n: cfg.i18n || {}
 			};
-			fillOsmFeaturesIntoKinds(kinds, kindOrder, results[1], ergoCtx);
+			var osmSeenKeys = {};
+			fillOsmFeaturesIntoKinds(kinds, kindOrder, results[1], ergoCtx, osmSeenKeys);
 
 			var overlays = buildOverlaysObject(m, Ltxt, labels, kinds, kindOrder, yardsGroup, centerGroup);
 
@@ -757,6 +773,7 @@
 				centerGroup: centerGroup,
 				kinds: kinds,
 				kindOrder: kindOrder,
+				osmSeenKeys: osmSeenKeys,
 				layersControl: layersControl
 			};
 			if (d.featuresUrl && d.canScanOsm) {

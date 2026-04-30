@@ -4,7 +4,7 @@ Tags: world statistics, openstreetmap, overpass, leaflet, cities, ergonomics
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.2.9
+Stable tag: 1.2.10
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -118,6 +118,9 @@ Additional documentation is available in the `docs/` directory:
 * `docs/operations.md`
 
 == Changelog ==
+
+= 1.2.10 =
+* Keep already visible OSM objects on the map after scanning a new bbox; scan results are merged instead of replacing layers.
 
 = 1.2.9 =
 * Added WordPress REST nonce headers to map REST requests so authorized local scans keep the current user session.
