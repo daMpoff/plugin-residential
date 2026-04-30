@@ -48,6 +48,7 @@ require_once WSCOSM_DIR . 'includes/class-wscosm-yard-at.php';
 require_once WSCOSM_DIR . 'includes/class-wscosm-scan-progress.php';
 require_once WSCOSM_DIR . 'includes/class-wscosm-feature-store.php';
 require_once WSCOSM_DIR . 'includes/class-wscosm-overpass.php';
+require_once WSCOSM_DIR . 'includes/class-wscosm-territory-job.php';
 require_once WSCOSM_DIR . 'includes/class-wscosm-rest.php';
 require_once WSCOSM_DIR . 'includes/class-wscosm-city-map.php';
 require_once WSCOSM_DIR . 'includes/class-wscosm-country-tab.php';
@@ -125,3 +126,5 @@ add_action( 'wsp_city_after_location_map', [ 'WSCOSM_City_Map', 'render_legend_a
 add_action( 'worldstat_after_city', [ 'WSCOSM_City_Map', 'render_section' ], 20, 2 );
 add_action( 'wp_ajax_wscosm_country_city', [ 'WSCOSM_Country_Tab', 'ajax_city_yards' ] );
 add_action( 'wp_ajax_nopriv_wscosm_country_city', [ 'WSCOSM_Country_Tab', 'ajax_city_yards' ] );
+add_action( 'wp_ajax_wscosm_run_territory_job', [ 'WSCOSM_Territory_Job', 'ajax_run' ] );
+add_action( 'wp_ajax_nopriv_wscosm_run_territory_job', [ 'WSCOSM_Territory_Job', 'ajax_run' ] );

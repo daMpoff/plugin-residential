@@ -76,8 +76,10 @@ class WSCOSM_Country_Tab {
 			wp_send_json_error( [ 'message' => 'no_coords' ] );
 		}
 
-		$yards_count = class_exists( 'WSErgo_Data' ) ? WSErgo_Data::count_city_building_yards( $city_id ) : 0;
-		$yards_url   = ( $yards_count > 0 && class_exists( 'WSErgo_Data' ) )
+		// Do not count yards here: the postmeta query is expensive and blocks the
+		// "Loading..." state. The browser derives count/chart data from GeoJSON.
+		$yards_count = null;
+		$yards_url   = class_exists( 'WSErgo_Data' )
 			? WSErgo_Data::get_city_yards_geojson_rest_url( $city_id )
 			: '';
 		$features_url = add_query_arg(
@@ -88,9 +90,11 @@ class WSCOSM_Country_Tab {
 		$osm_count      = class_exists( 'WSCOSM_Feature_Store' ) ? WSCOSM_Feature_Store::count_for_city( $city_id ) : 0;
 		$yard_ergo_url  = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/yard-ergo-at' );
 		$voronoi_url    = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/voronoi-yards' );
+		$territory_job_url = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/territory-jobs' );
 
-		$means  = self::get_city_yard_dimension_means( $city_id, 250 );
-		$chart  = ! empty( $means ) ? self::build_chart_payload( $means ) : [];
+		$chart  = class_exists( 'WSErgo_Model' )
+			? self::build_chart_payload( array_fill_keys( WSErgo_Model::DIMENSION_KEYS, null ) )
+			: [];
 
 		wp_send_json_success(
 			[
@@ -105,6 +109,7 @@ class WSCOSM_Country_Tab {
 				'featuresUrl'     => $features_url,
 				'yardErgoAtUrl'   => $yard_ergo_url,
 				'voronoiSaveUrl'  => $voronoi_url,
+				'territoryJobUrl' => $territory_job_url,
 				'canScanOsm'      => class_exists( 'WSCOSM_REST' ) ? WSCOSM_REST::can_live_overpass( $city_id ) : false,
 				'canSaveVoronoi'  => class_exists( 'WSCOSM_REST' ) && class_exists( 'WSErgo_CPT' ) ? WSCOSM_REST::can_live_overpass( $city_id ) : false,
 				'hasErgo'         => class_exists( 'WSErgo_CPT' ),
@@ -208,6 +213,7 @@ class WSCOSM_Country_Tab {
 		return [
 			'type'     => 'bar',
 			'title'    => __( 'Средние баллы по придомовым (0–100)', 'worldstat-courtyard-osm' ),
+			'dimensionKeys' => WSErgo_Model::DIMENSION_KEYS,
 			'labels'   => $labs,
 			'datasets' => [
 				[
@@ -276,20 +282,20 @@ class WSCOSM_Country_Tab {
 					'scanProgressDone'    => __( 'Готово', 'worldstat-courtyard-osm' ),
 					'scanProgressError'   => __( 'Ошибка сохранения', 'worldstat-courtyard-osm' ),
 					'scanProgressCounts'  => __( 'Записей в базу', 'worldstat-courtyard-osm' ),
-					'buildVoronoi'    => __( 'Построить Вороного', 'worldstat-courtyard-osm' ),
-					'buildVoronoiHint'=> __( 'Построить непересекающиеся придомовые участки по всем зданиям OSM на карте', 'worldstat-courtyard-osm' ),
+					'buildVoronoi'    => __( 'Построить территории', 'worldstat-courtyard-osm' ),
+					'buildVoronoiHint'=> __( 'Придомовые территории по растру (ближайшее здание, ограничение по расстоянию и препятствиям OSM).', 'worldstat-courtyard-osm' ),
 					'saveVoronoi'     => __( 'Сохранить участки', 'worldstat-courtyard-osm' ),
-					'saveVoronoiHint' => __( 'Сохранить построенные участки в базу WorldStat Ergonomics', 'worldstat-courtyard-osm' ),
-					'voronoiLayer'    => __( 'Вороной: предпросмотр', 'worldstat-courtyard-osm' ),
+					'saveVoronoiHint' => __( 'Сохранить построенные raster-территории в базу WorldStat Ergonomics', 'worldstat-courtyard-osm' ),
+					'voronoiLayer'    => __( 'Raster allocation: предпросмотр', 'worldstat-courtyard-osm' ),
 					'voronoiNoBuildings' => __( 'Не удалось построить участки: нет подходящих зданий или свободной территории. Сначала просканируйте область.', 'worldstat-courtyard-osm' ),
-					'voronoiBuilding' => __( 'Построение Вороного', 'worldstat-courtyard-osm' ),
-					'voronoiReady'    => __( 'Вороной построен', 'worldstat-courtyard-osm' ),
+					'voronoiBuilding' => __( 'Построение raster allocation', 'worldstat-courtyard-osm' ),
+					'voronoiReady'    => __( 'Raster-территории построены', 'worldstat-courtyard-osm' ),
 					'voronoiSaving'   => __( 'Сохранение участков', 'worldstat-courtyard-osm' ),
 					'voronoiSaved'    => __( 'Участки сохранены', 'worldstat-courtyard-osm' ),
 					'voronoiSaveDisabled' => __( 'Для сохранения нужен активный WorldStat Ergonomics и права редактирования города.', 'worldstat-courtyard-osm' ),
-					'voronoiRebuildAfterScan' => __( 'OSM обновлен. Постройте Вороного заново, чтобы включить новые здания.', 'worldstat-courtyard-osm' ),
-					'voronoiError'    => __( 'Не удалось построить или сохранить Вороного.', 'worldstat-courtyard-osm' ),
-					'territoryDebugLayer' => __( 'Отладка территорий: кварталы и препятствия', 'worldstat-courtyard-osm' ),
+					'voronoiRebuildAfterScan' => __( 'OSM обновлен. Постройте raster allocation заново, чтобы включить новые здания.', 'worldstat-courtyard-osm' ),
+					'voronoiError'    => __( 'Не удалось построить или сохранить raster-территории.', 'worldstat-courtyard-osm' ),
+					'territoryDebugLayer' => __( 'Отладка raster-территорий: сетка, назначения и препятствия', 'worldstat-courtyard-osm' ),
 					'layerYards'      => __( 'Придомовые (база сайта)', 'worldstat-courtyard-osm' ),
 					'layerBench'      => __( 'Скамейки', 'worldstat-courtyard-osm' ),
 					'layerLight'      => __( 'Фонари', 'worldstat-courtyard-osm' ),

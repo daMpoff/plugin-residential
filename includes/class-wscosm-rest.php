@@ -25,6 +25,15 @@ class WSCOSM_REST {
 		return $city_id > 0 && self::can_live_overpass( $city_id );
 	}
 
+	public static function can_activate_territory_job_request( WP_REST_Request $request ): bool {
+		$job_id = sanitize_key( (string) $request->get_param( 'job_id' ) );
+		if ( $job_id === '' || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
+			return false;
+		}
+		$city_id = WSCOSM_Territory_Job::get_city_id_for_job( $job_id );
+		return $city_id > 0 && self::can_live_overpass( $city_id );
+	}
+
 	public static function register(): void {
 		register_rest_route(
 			self::NS,
@@ -131,6 +140,53 @@ class WSCOSM_REST {
 						'sanitize_callback' => 'absint',
 					],
 				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/city/(?P<id>\d+)/territory-jobs',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ self::class, 'start_territory_job' ],
+				'permission_callback' => [ self::class, 'can_edit_city_request' ],
+				'args'                => [
+					'id' => [
+						'type'              => 'integer',
+						'required'          => true,
+						'sanitize_callback' => 'absint',
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/territory-jobs/(?P<job_id>[a-zA-Z0-9]+)/status',
+			[
+				'methods'             => 'GET',
+				'callback'            => [ self::class, 'get_territory_job_status' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/territory-jobs/(?P<job_id>[a-zA-Z0-9]+)/result',
+			[
+				'methods'             => 'GET',
+				'callback'            => [ self::class, 'get_territory_job_result' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/territory-jobs/(?P<job_id>[a-zA-Z0-9]+)/activate',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ self::class, 'activate_territory_job' ],
+				'permission_callback' => [ self::class, 'can_activate_territory_job_request' ],
 			]
 		);
 	}
@@ -398,6 +454,108 @@ class WSCOSM_REST {
 		return new WP_REST_Response( $p, 200 );
 	}
 
+	public static function start_territory_job( WP_REST_Request $request ) {
+		$city_id = (int) $request->get_param( 'id' );
+		if ( $city_id <= 0 || ! class_exists( 'WSCities_CPT' ) || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
+			return new WP_Error( 'wscosm_bad_city', 'Invalid city id.', [ 'status' => 400 ] );
+		}
+		$post = get_post( $city_id );
+		if ( ! $post || $post->post_type !== WSCities_CPT::SLUG || $post->post_status !== 'publish' ) {
+			return new WP_Error( 'wscosm_not_found', 'City not found.', [ 'status' => 404 ] );
+		}
+		$lat = (float) get_post_meta( $city_id, 'wscity_lat', true );
+		$lng = (float) get_post_meta( $city_id, 'wscity_lng', true );
+		if ( ! $lat || ! $lng ) {
+			return new WP_Error( 'wscosm_no_coords', 'City coordinates are missing.', [ 'status' => 400 ] );
+		}
+		$params = $request->get_json_params();
+		$params = is_array( $params ) ? $params : [];
+		$bounds = isset( $params['bounds'] ) && is_array( $params['bounds'] ) ? $params['bounds'] : $params;
+		$has_bbox = isset( $bounds['south'], $bounds['west'], $bounds['north'], $bounds['east'] );
+		if ( $has_bbox ) {
+			$bbox = WSCOSM_Overpass::normalize_client_bbox(
+				$lat,
+				$lng,
+				[
+					's' => (float) $bounds['south'],
+					'w' => (float) $bounds['west'],
+					'n' => (float) $bounds['north'],
+					'e' => (float) $bounds['east'],
+				]
+			);
+			if ( is_wp_error( $bbox ) ) {
+				return $bbox;
+			}
+		} else {
+			$bbox = WSCOSM_Overpass::bbox_from_center( $lat, $lng, WSCOSM_Overpass::default_radius_km() );
+		}
+		$config = isset( $params['config'] ) && is_array( $params['config'] ) ? $params['config'] : [];
+		$status = WSCOSM_Territory_Job::enqueue( $city_id, $bbox, $config );
+		$job_id = (string) ( $status['job_id'] ?? '' );
+		$status['status_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/status' );
+		$status['result_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/result' );
+		$status['activate_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/activate' );
+		return new WP_REST_Response( $status, 202 );
+	}
+
+	public static function get_territory_job_status( WP_REST_Request $request ) {
+		$job_id = sanitize_key( (string) $request->get_param( 'job_id' ) );
+		if ( $job_id === '' || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
+			return new WP_Error( 'wscosm_bad_job', 'Invalid job id.', [ 'status' => 400 ] );
+		}
+		WSCOSM_Territory_Job::maybe_run_queued( $job_id );
+		return new WP_REST_Response( WSCOSM_Territory_Job::get_status( $job_id ), 200 );
+	}
+
+	public static function get_territory_job_result( WP_REST_Request $request ) {
+		$job_id = sanitize_key( (string) $request->get_param( 'job_id' ) );
+		if ( $job_id === '' || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
+			return new WP_Error( 'wscosm_bad_job', 'Invalid job id.', [ 'status' => 400 ] );
+		}
+		return new WP_REST_Response( WSCOSM_Territory_Job::get_result( $job_id ), 200 );
+	}
+
+	/**
+	 * Atomically replace wscosm-generated yards with the finished territory job GeoJSON result.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public static function activate_territory_job( WP_REST_Request $request ) {
+		$job_id = sanitize_key( (string) $request->get_param( 'job_id' ) );
+		if ( $job_id === '' || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
+			return new WP_Error( 'wscosm_bad_job', 'Invalid job id.', [ 'status' => 400 ] );
+		}
+
+		WSCOSM_Territory_Job::maybe_run_queued( $job_id );
+		$job_status = WSCOSM_Territory_Job::get_status( $job_id );
+		if ( (string) ( $job_status['status'] ?? '' ) !== 'done' ) {
+			return new WP_Error(
+				'wscosm_job_not_ready',
+				'Territory job is not finished yet.',
+				[ 'status' => 409 ]
+			);
+		}
+
+		$city_id = WSCOSM_Territory_Job::get_city_id_for_job( $job_id );
+		$city_err = self::assert_city_publishable_for_yards( $city_id );
+		if ( $city_err instanceof WP_Error ) {
+			return $city_err;
+		}
+
+		$result   = WSCOSM_Territory_Job::get_result( $job_id );
+		$features = isset( $result['features'] ) && is_array( $result['features'] ) ? $result['features'] : [];
+		if ( empty( $features ) ) {
+			return new WP_Error(
+				'wscosm_empty_territory_result',
+				'Job result has no territory features.',
+				[ 'status' => 400 ]
+			);
+		}
+
+		$stats = self::ingest_generated_yard_features( $city_id, $features, true );
+		return new WP_REST_Response( $stats, 200 );
+	}
+
 	/**
 	 * HTML эргономики для точки (придомовый полигон).
 	 *
@@ -457,12 +615,33 @@ class WSCOSM_REST {
 	}
 
 	/**
-	 * Save generated bounded Voronoi cells as WorldStat Ergonomics yards.
+	 * Save generated raster allocation territories as WorldStat Ergonomics yards.
 	 *
 	 * @param WP_REST_Request $request Request.
 	 */
 	public static function save_voronoi_yards( WP_REST_Request $request ) {
 		$city_id = (int) $request->get_param( 'id' );
+		$city_err = self::assert_city_publishable_for_yards( $city_id );
+		if ( $city_err instanceof WP_Error ) {
+			return $city_err;
+		}
+
+		$params           = $request->get_json_params();
+		$features         = isset( $params['features'] ) && is_array( $params['features'] ) ? $params['features'] : [];
+		$replace_existing = isset( $params['replace_existing'] ) && (bool) $params['replace_existing'];
+		if ( empty( $features ) ) {
+			return new WP_Error( 'wscosm_empty_generated_yards', 'No generated yard features provided.', [ 'status' => 400 ] );
+		}
+
+		$features = array_slice( $features, 0, 500 );
+		$stats    = self::ingest_generated_yard_features( $city_id, $features, $replace_existing );
+		return new WP_REST_Response( $stats, 200 );
+	}
+
+	/**
+	 * @return WP_Error|null Null if city is OK for importing generated yards.
+	 */
+	private static function assert_city_publishable_for_yards( int $city_id ): ?WP_Error {
 		if ( $city_id <= 0 || ! class_exists( 'WSCities_CPT' ) ) {
 			return new WP_Error( 'wscosm_bad_city', 'Invalid city id.', [ 'status' => 400 ] );
 		}
@@ -475,25 +654,31 @@ class WSCOSM_REST {
 		if ( ! class_exists( 'WSErgo_CPT' ) ) {
 			return new WP_Error(
 				'wscosm_ergo_missing',
-				'WorldStat Ergonomics is required to save Voronoi yards.',
+				'WorldStat Ergonomics is required to save generated yards.',
 				[ 'status' => 409 ]
 			);
 		}
 
-		$params   = $request->get_json_params();
-		$features = isset( $params['features'] ) && is_array( $params['features'] ) ? $params['features'] : [];
-		if ( empty( $features ) ) {
-			return new WP_Error( 'wscosm_empty_voronoi', 'No Voronoi features provided.', [ 'status' => 400 ] );
-		}
+		return null;
+	}
 
-		$features     = array_slice( $features, 0, 500 );
+	/**
+	 * @param array<int, mixed> $features GeoJSON Feature objects.
+	 * @return array{saved:int,deleted:int,skipped:int,errors:array<int, string>}
+	 */
+	private static function ingest_generated_yard_features( int $city_id, array $features, bool $replace_existing ): array {
 		$saved        = 0;
+		$deleted      = 0;
 		$skipped      = 0;
 		$errors       = [];
 		$prev_suspend = WSErgo_CPT::$suspend_autorecalc;
 		WSErgo_CPT::$suspend_autorecalc = true;
 
 		try {
+			if ( $replace_existing ) {
+				$deleted = self::delete_existing_generated_yards( $city_id );
+			}
+
 			foreach ( $features as $feature ) {
 				if ( ! is_array( $feature ) || ( $feature['type'] ?? '' ) !== 'Feature' ) {
 					++$skipped;
@@ -530,8 +715,12 @@ class WSCOSM_REST {
 
 				$title = sanitize_text_field( (string) ( $props['title'] ?? '' ) );
 				if ( $title === '' ) {
-					$name  = sanitize_text_field( (string) ( $props['name'] ?? '' ) );
-					$title = $name !== '' ? $name : sprintf( 'Voronoi yard %s', $object_key );
+					$name = sanitize_text_field( (string) ( $props['name'] ?? '' ) );
+					$title = $name !== '' ? $name : sprintf(
+						/* translators: %s: building object id (OSM ref or raster identifier). */
+						__( 'Generated yard %s', 'worldstat-courtyard-osm' ),
+						$object_key
+					);
 				}
 
 				$post_id = self::find_existing_voronoi_yard( $city_id, $object_key );
@@ -572,9 +761,10 @@ class WSCOSM_REST {
 				update_post_meta( $post_id, $city_key, $city_id );
 				update_post_meta( $post_id, $type_key, 'building' );
 				update_post_meta( $post_id, $addr_key, $title );
-				update_post_meta( $post_id, $stat_key, 'voronoi' );
+				update_post_meta( $post_id, $stat_key, 'raster_allocation' );
 				update_post_meta( $post_id, self::META_VORONOI_OBJECT_KEY, substr( $object_key, 0, 96 ) );
 				update_post_meta( $post_id, self::META_VORONOI_SOURCE, 'wscosm' );
+				update_post_meta( $post_id, 'wscosm_territory_method', sanitize_key( (string) ( $props['method'] ?? 'generated' ) ) );
 
 				if ( isset( $props['wscosm_osm_el_type'] ) ) {
 					update_post_meta( $post_id, 'wscosm_osm_el_type', sanitize_key( (string) $props['wscosm_osm_el_type'] ) );
@@ -593,14 +783,146 @@ class WSCOSM_REST {
 			WSErgo_Data::bust_city_polygons_cache( $city_id );
 		}
 
-		return new WP_REST_Response(
+		return [
+			'saved'   => $saved,
+			'deleted' => $deleted,
+			'skipped' => $skipped,
+			'errors'  => array_slice( $errors, 0, 5 ),
+		];
+	}
+
+	private static function delete_existing_generated_yards( int $city_id ): int {
+		$city_key = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_CITY_ID : 'wsosm_city_id';
+		$deleted  = 0;
+
+		$generated_conditions = [
+			'relation' => 'OR',
 			[
-				'saved'   => $saved,
-				'skipped' => $skipped,
-				'errors'  => array_slice( $errors, 0, 5 ),
+				'key'     => self::META_VORONOI_SOURCE,
+				'value'   => 'wscosm',
+				'compare' => '=',
 			],
-			200
+			[
+				'key'     => self::META_VORONOI_OBJECT_KEY,
+				'compare' => 'EXISTS',
+			],
+		];
+		/**
+		 * Optional: widen “replace dataset” deletes (never delete unrelated yards unless they match WP_Query below).
+		 */
+		$generated_conditions = apply_filters( 'wscosm_territory_replace_conditions', $generated_conditions, $city_id );
+
+		do {
+			$q = new WP_Query(
+				[
+					'post_type'              => WSErgo_CPT::SLUG_YARD,
+					'post_status'            => [ 'publish', 'draft', 'pending', 'private' ],
+					'posts_per_page'         => 200,
+					'fields'                 => 'ids',
+					'no_found_rows'          => true,
+					'update_post_meta_cache' => false,
+					'update_post_term_cache' => false,
+					'meta_query'             => [
+						'relation' => 'AND',
+						[
+							'key'   => $city_key,
+							'value' => $city_id,
+						],
+						$generated_conditions,
+					],
+				]
+			);
+			$ids = array_map( 'intval', (array) $q->posts );
+			foreach ( $ids as $post_id ) {
+				if ( wp_delete_post( $post_id, true ) ) {
+					++$deleted;
+				}
+			}
+		} while ( ! empty( $ids ) );
+
+		$deleted += self::delete_generated_yards_by_legacy_title( $city_id );
+
+		return $deleted;
+	}
+
+	/**
+	 * Deletes plugin-generated yards that lack wscosm_voronoi_object_key but match known auto-generated title prefixes.
+	 */
+	private static function delete_generated_yards_by_legacy_title( int $city_id ): int {
+		if ( ! class_exists( 'WSErgo_CPT' ) ) {
+			return 0;
+		}
+		$city_key        = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_CITY_ID : 'wsosm_city_id';
+		$entity_type_key = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_ENTITY_TYPE : 'wsosm_entity_type';
+		$prefixes        = self::legacy_generated_yard_title_prefixes( $city_id );
+		$deleted         = 0;
+
+		$ids = get_posts(
+			[
+				'post_type'              => WSErgo_CPT::SLUG_YARD,
+				'post_status'            => [ 'publish', 'draft', 'pending', 'private' ],
+				'posts_per_page'         => 8000,
+				'fields'                 => 'ids',
+				'orderby'                => 'ID',
+				'order'                  => 'ASC',
+				'no_found_rows'          => true,
+				'update_post_meta_cache' => false,
+				'update_post_term_cache' => false,
+				'meta_query'             => [
+					'relation' => 'AND',
+					[
+						'key'   => $city_key,
+						'value' => $city_id,
+					],
+					[
+						'key'   => $entity_type_key,
+						'value' => 'building',
+					],
+				],
+			]
 		);
+
+		foreach ( array_map( 'intval', (array) $ids ) as $post_id ) {
+			if ( '' !== get_post_meta( $post_id, self::META_VORONOI_OBJECT_KEY, true ) ) {
+				continue;
+			}
+			$title      = get_the_title( $post_id );
+			$matches_px = false;
+			foreach ( $prefixes as $prefix ) {
+				$prefix = (string) $prefix;
+				if ( $prefix !== '' && strpos( $title, $prefix ) === 0 ) {
+					$matches_px = true;
+					break;
+				}
+			}
+			if ( ! $matches_px ) {
+				continue;
+			}
+			if ( wp_delete_post( $post_id, true ) ) {
+				++$deleted;
+			}
+		}
+
+		return $deleted;
+	}
+
+	/**
+	 * Title prefixes used by auto-generated yard posts without meta object_key (legacy saves).
+	 *
+	 * @return array<int, string>
+	 */
+	private static function legacy_generated_yard_title_prefixes( int $city_id ): array {
+		$defaults = [ 'Generated yard ' ];
+		$tpl      = __( 'Generated yard %s', 'worldstat-courtyard-osm' );
+		if ( is_string( $tpl ) ) {
+			$before = strstr( $tpl, '%s', true );
+			if ( false !== $before && $before !== '' ) {
+				$defaults[] = $before;
+			}
+		}
+		$defaults = array_values( array_unique( array_filter( array_map( 'strval', $defaults ) ) ) );
+
+		return apply_filters( 'wscosm_legacy_generated_yard_title_prefixes', $defaults, $city_id );
 	}
 
 	private static function find_existing_voronoi_yard( int $city_id, string $object_key ): int {
