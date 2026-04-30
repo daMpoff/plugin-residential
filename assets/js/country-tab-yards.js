@@ -504,6 +504,7 @@
 			var props = (feat && feat.properties) || {};
 			var kind = props.wscosm_kind || '';
 			if (!isBldgKind(kind)) return;
+			if (kind === 'bldg_part') return;
 			var bounds = geometryBounds(feat.geometry);
 			if (!bounds) return;
 			var lon = (bounds.w + bounds.e) / 2;
@@ -525,6 +526,19 @@
 		return out;
 	}
 
+	function expandBoundsMeters(bounds, lat, bufferM) {
+		var latPad = bufferM / 111320;
+		var cos = Math.cos(((lat || (bounds.s + bounds.n) / 2) * Math.PI) / 180);
+		cos = Math.max(0.15, Math.min(1, Math.abs(cos)));
+		var lonPad = bufferM / (111320 * cos);
+		return {
+			w: bounds.w - lonPad,
+			s: bounds.s - latPad,
+			e: bounds.e + lonPad,
+			n: bounds.n + latPad
+		};
+	}
+
 	function expandedSeedBounds(seeds, cityLat, bufferM) {
 		if (!seeds.length) return null;
 		var b = { w: Infinity, s: Infinity, e: -Infinity, n: -Infinity };
@@ -535,11 +549,7 @@
 			b.n = Math.max(b.n, seed.bounds.n);
 		});
 		if (b.w === Infinity) return null;
-		var latPad = bufferM / 111320;
-		var cos = Math.cos(((cityLat || (b.s + b.n) / 2) * Math.PI) / 180);
-		cos = Math.max(0.15, Math.min(1, Math.abs(cos)));
-		var lonPad = bufferM / (111320 * cos);
-		return { w: b.w - lonPad, s: b.s - latPad, e: b.e + lonPad, n: b.n + latPad };
+		return expandBoundsMeters(b, cityLat, bufferM);
 	}
 
 	function closeRing(coords) {
@@ -594,6 +604,61 @@
 		return out;
 	}
 
+	function clipPolygonToRect(poly, rect) {
+		function clipEdge(input, inside, intersect) {
+			var out = [];
+			if (!input.length) return out;
+			for (var i = 0; i < input.length; i++) {
+				var cur = input[i];
+				var prev = input[(i + input.length - 1) % input.length];
+				var curIn = inside(cur);
+				var prevIn = inside(prev);
+				if (curIn) {
+					if (!prevIn) out.push(intersect(prev, cur));
+					out.push(cur);
+				} else if (prevIn) {
+					out.push(intersect(prev, cur));
+				}
+			}
+			return out;
+		}
+		var eps = 1e-12;
+		var out = poly;
+		out = clipEdge(
+			out,
+			function (p) { return p.x >= rect.w - eps; },
+			function (a, b) {
+				var t = (rect.w - a.x) / (b.x - a.x || eps);
+				return { x: rect.w, y: a.y + (b.y - a.y) * t };
+			}
+		);
+		out = clipEdge(
+			out,
+			function (p) { return p.x <= rect.e + eps; },
+			function (a, b) {
+				var t = (rect.e - a.x) / (b.x - a.x || eps);
+				return { x: rect.e, y: a.y + (b.y - a.y) * t };
+			}
+		);
+		out = clipEdge(
+			out,
+			function (p) { return p.y >= rect.s - eps; },
+			function (a, b) {
+				var t = (rect.s - a.y) / (b.y - a.y || eps);
+				return { x: a.x + (b.x - a.x) * t, y: rect.s };
+			}
+		);
+		out = clipEdge(
+			out,
+			function (p) { return p.y <= rect.n + eps; },
+			function (a, b) {
+				var t = (rect.n - a.y) / (b.y - a.y || eps);
+				return { x: a.x + (b.x - a.x) * t, y: rect.n };
+			}
+		);
+		return out;
+	}
+
 	function buildVoronoiFeaturesAsync(featureStore, cityLat, cityLng, progress, done) {
 		var seeds = buildingSeedsFromStore(featureStore);
 		if (seeds.length < 2) {
@@ -621,6 +686,9 @@
 				for (var j = 0; j < seeds.length && poly.length >= 3; j++) {
 					if (i === j) continue;
 					poly = clipPolygonByBisector(poly, seed, seeds[j]);
+				}
+				if (poly.length >= 3) {
+					poly = clipPolygonToRect(poly, expandBoundsMeters(seed.bounds, seed.lat, 50));
 				}
 				if (poly.length >= 3) {
 					var ring = closeRing(

@@ -39,7 +39,7 @@ The important behavior is:
 
 ## Voronoi Courtyards
 
-The country tab can build non-overlapping courtyard previews from all visible saved OSM buildings. The generated cells are clipped to the building bbox expanded by about 50 meters. Authorized users can save the preview into WorldStat Ergonomics as `wsp_yard` posts; later page loads read those polygons through the existing `wsergo/v1` GeoJSON endpoint.
+The country tab can build non-overlapping courtyard previews from visible saved OSM buildings. `building:part` objects are ignored as seeds so one building is not split into artificial yards. The generated cells are clipped to each building bbox expanded by about 50 meters. Authorized users can save the preview into WorldStat Ergonomics as `wsp_yard` posts; later page loads read those polygons through the existing `wsergo/v1` GeoJSON endpoint.
 
 ## Repository Layout
 

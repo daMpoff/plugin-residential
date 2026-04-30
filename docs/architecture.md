@@ -53,6 +53,7 @@ This plugin is a World Statistics Platform extension. It adds OSM-based courtyar
 - Adds the protected scan control for users who can scan.
 - Sends live scan requests with `source=live&refresh=1`.
 - Builds bounded Voronoi previews from OSM building centers and saves them in batches.
+- Clips each generated cell to its own building envelope plus about 50 meters; `building:part` is not used as a seed.
 
 ## Data Flow
 

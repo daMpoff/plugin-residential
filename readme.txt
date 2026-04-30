@@ -4,7 +4,7 @@ Tags: world statistics, openstreetmap, overpass, leaflet, cities, ergonomics
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.2.11
+Stable tag: 1.2.12
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -120,6 +120,10 @@ Additional documentation is available in the `docs/` directory:
 * `docs/operations.md`
 
 == Changelog ==
+
+= 1.2.12 =
+* Tightened Voronoi courtyard cells to each building's local 50 m envelope.
+* Excluded `building:part` objects from Voronoi seeds to avoid slicing one building into artificial yards.
 
 = 1.2.11 =
 * Added bounded Voronoi courtyard previews from OSM buildings.
