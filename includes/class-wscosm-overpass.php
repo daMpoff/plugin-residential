@@ -141,7 +141,15 @@ class WSCOSM_Overpass {
   node["leisure"="playground"]({$s},{$w},{$n},{$e});
   nwr["building"]({$s},{$w},{$n},{$e});
   nwr["building:part"]({$s},{$w},{$n},{$e});
-  way["highway"~"^(footway|path|pedestrian|steps|cycleway)$"]({$s},{$w},{$n},{$e});
+  way["highway"]({$s},{$w},{$n},{$e});
+  way["railway"]({$s},{$w},{$n},{$e});
+  way["natural"="water"]({$s},{$w},{$n},{$e});
+  relation["natural"="water"]({$s},{$w},{$n},{$e});
+  way["waterway"]({$s},{$w},{$n},{$e});
+  way["barrier"~"^(fence|wall)$"]({$s},{$w},{$n},{$e});
+  way["amenity"="parking"]({$s},{$w},{$n},{$e});
+  way["landuse"~"^(industrial|railway)$"]({$s},{$w},{$n},{$e});
+  relation["landuse"~"^(industrial|railway)$"]({$s},{$w},{$n},{$e});
   way["leisure"="playground"]({$s},{$w},{$n},{$e});
   way["landuse"~"^(grass|meadow|recreation_ground)$"]({$s},{$w},{$n},{$e});
 );
@@ -391,6 +399,16 @@ OQ;
 			if ( $bk !== '' ) {
 				return $bk;
 			}
+			if ( ( $tags['natural'] ?? '' ) === 'water' ) {
+				return 'water';
+			}
+			$lu = (string) ( $tags['landuse'] ?? '' );
+			if ( $lu === 'industrial' ) {
+				return 'landuse_industrial';
+			}
+			if ( $lu === 'railway' ) {
+				return 'landuse_railway';
+			}
 		}
 		if ( $t === 'way' ) {
 			$bk = self::building_kind_from_tags( $tags );
@@ -398,13 +416,35 @@ OQ;
 				return $bk;
 			}
 			$hw = (string) ( $tags['highway'] ?? '' );
-			if ( $hw !== '' && preg_match( '/^(footway|path|pedestrian|steps|cycleway)$/', $hw ) ) {
-				return 'path';
+			if ( $hw !== '' ) {
+				if ( preg_match( '/^(footway|path|pedestrian|steps|cycleway)$/', $hw ) ) {
+					return 'path';
+				}
+				return 'road';
+			}
+			if ( (string) ( $tags['railway'] ?? '' ) !== '' ) {
+				return 'railway';
+			}
+			if ( ( $tags['natural'] ?? '' ) === 'water' || (string) ( $tags['waterway'] ?? '' ) !== '' ) {
+				return 'water';
+			}
+			$barrier = (string) ( $tags['barrier'] ?? '' );
+			if ( $barrier !== '' && preg_match( '/^(fence|wall)$/', $barrier ) ) {
+				return 'barrier';
+			}
+			if ( ( $tags['amenity'] ?? '' ) === 'parking' ) {
+				return 'parking';
 			}
 			if ( ( $tags['leisure'] ?? '' ) === 'playground' ) {
 				return 'playground';
 			}
 			$lu = (string) ( $tags['landuse'] ?? '' );
+			if ( $lu === 'industrial' ) {
+				return 'landuse_industrial';
+			}
+			if ( $lu === 'railway' ) {
+				return 'landuse_railway';
+			}
 			if ( $lu !== '' && preg_match( '/^(grass|meadow|recreation_ground)$/', $lu ) ) {
 				return 'landuse_green';
 			}
@@ -615,7 +655,15 @@ OQ;
 				return null;
 			}
 			$kind = self::classify_element( $el );
-			$as_poly = ( $kind === 'landuse_green' || $kind === 'playground' || strncmp( $kind, 'bldg_', 5 ) === 0 );
+			$as_poly = (
+				$kind === 'landuse_green'
+				|| $kind === 'playground'
+				|| $kind === 'water'
+				|| $kind === 'parking'
+				|| $kind === 'landuse_industrial'
+				|| $kind === 'landuse_railway'
+				|| strncmp( $kind, 'bldg_', 5 ) === 0
+			);
 			if ( $as_poly ) {
 				$coords = self::close_coords_ring_if_needed( $coords );
 				$first  = $coords[0];

@@ -48,6 +48,23 @@
 		bldg_other: { fill: '#9ca3af', stroke: '#374151' }
 	};
 
+	var TERRITORY_CONFIG = {
+		maxDistanceMeters: 50,
+		minAreaM2: 5,
+		allocationCellMeters: 4,
+		maxGridCells: 50000,
+		roadBuffers: {
+			primary: 15,
+			secondary: 12,
+			tertiary: 10,
+			residential: 7,
+			service: 4,
+			default: 6
+		},
+		useFootwaysAsBarriers: false,
+		debug: true
+	};
+
 	function isBldgKind(kind) {
 		return kind && String(kind).indexOf('bldg_') === 0;
 	}
@@ -378,7 +395,7 @@
 		return added;
 	}
 
-	function buildOverlaysObject(m, Ltxt, labels, kinds, kindOrder, yardsGroup, centerGroup, voronoiGroup) {
+	function buildOverlaysObject(m, Ltxt, labels, kinds, kindOrder, yardsGroup, centerGroup, voronoiGroup, territoryDebugGroup) {
 		var overlays = {};
 		overlays[Ltxt.layerCenter || 'Center'] = centerGroup;
 		kindOrder.forEach(function (k) {
@@ -407,6 +424,9 @@
 		if (voronoiGroup && voronoiGroup.getLayers().length > 0) {
 			voronoiGroup.addTo(m);
 			overlays[Ltxt.voronoiLayer || 'Voronoi preview'] = voronoiGroup;
+		}
+		if (territoryDebugGroup && territoryDebugGroup.getLayers().length > 0) {
+			overlays[Ltxt.territoryDebugLayer || 'Territory debug'] = territoryDebugGroup;
 		}
 		return overlays;
 	}
@@ -659,75 +679,679 @@
 		return out;
 	}
 
-	function buildVoronoiFeaturesAsync(featureStore, cityLat, cityLng, progress, done) {
-		var seeds = buildingSeedsFromStore(featureStore);
-		if (seeds.length < 2) {
-			done(new Error('not_enough_buildings'));
-			return;
-		}
-		var bounds = expandedSeedBounds(seeds, cityLat, 50);
-		if (!bounds) {
-			var fb = 0.01;
-			bounds = { w: cityLng - fb, s: cityLat - fb, e: cityLng + fb, n: cityLat + fb };
-		}
-		var basePoly = [
-			{ x: bounds.w, y: bounds.s },
-			{ x: bounds.e, y: bounds.s },
-			{ x: bounds.e, y: bounds.n },
-			{ x: bounds.w, y: bounds.n }
-		];
-		var features = [];
-		var i = 0;
-		function tick() {
-			var start = Date.now();
-			while (i < seeds.length && Date.now() - start < 35) {
-				var seed = seeds[i];
-				var poly = basePoly.slice();
-				for (var j = 0; j < seeds.length && poly.length >= 3; j++) {
-					if (i === j) continue;
-					poly = clipPolygonByBisector(poly, seed, seeds[j]);
-				}
-				if (poly.length >= 3) {
-					poly = clipPolygonToRect(poly, expandBoundsMeters(seed.bounds, seed.lat, 50));
-				}
-				if (poly.length >= 3) {
-					var ring = closeRing(
-						poly.map(function (p) {
-							return [Number(p.x.toFixed(7)), Number(p.y.toFixed(7))];
-						})
-					);
-					if (ring.length >= 4 && polygonArea(ring) > 1e-12) {
-						var props = seed.props || {};
-						features.push({
-							type: 'Feature',
-							geometry: { type: 'Polygon', coordinates: [ring] },
-							properties: {
-								object_key: seed.key,
-								wscosm_kind: props.wscosm_kind || 'bldg_other',
-								wscosm_osm_el_type: props.wscosm_osm_el_type || '',
-								wscosm_osm_id: props.wscosm_osm_id || 0,
-								name: props.name || '',
-								title: props.name || seed.key,
-								center: { lat: seed.lat, lng: seed.lon },
-								lat: seed.lat,
-								lng: seed.lon
-							}
-						});
-					}
-				}
-				i++;
-			}
-			if (progress) progress(i, seeds.length);
-			if (i < seeds.length) {
-				window.setTimeout(tick, 0);
-			} else {
-				done(null, features);
-			}
-		}
-		tick();
+	function propTag(props, name) {
+		return (props && (props['tag_' + name] || props[name])) || '';
 	}
 
-	function drawVoronoiPreview(voronoiGroup, features) {
+	function projectedPoint(lon, lat, originLat) {
+		var cos = Math.cos((originLat * Math.PI) / 180);
+		cos = Math.max(0.15, Math.min(1, Math.abs(cos)));
+		return { x: lon * 111320 * cos, y: lat * 111320 };
+	}
+
+	function lonLatPoint(x, y, originLat) {
+		var cos = Math.cos((originLat * Math.PI) / 180);
+		cos = Math.max(0.15, Math.min(1, Math.abs(cos)));
+		return [Number((x / (111320 * cos)).toFixed(7)), Number((y / 111320).toFixed(7))];
+	}
+
+	function distanceToSegmentMeters(p, a, b) {
+		var dx = b.x - a.x;
+		var dy = b.y - a.y;
+		var len2 = dx * dx + dy * dy;
+		if (!len2) {
+			dx = p.x - a.x;
+			dy = p.y - a.y;
+			return Math.sqrt(dx * dx + dy * dy);
+		}
+		var t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+		t = Math.max(0, Math.min(1, t));
+		var qx = a.x + t * dx;
+		var qy = a.y + t * dy;
+		dx = p.x - qx;
+		dy = p.y - qy;
+		return Math.sqrt(dx * dx + dy * dy);
+	}
+
+	function pointInRingProjected(p, ring) {
+		var inside = false;
+		for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+			var a = ring[i];
+			var b = ring[j];
+			var crosses = a.y > p.y !== b.y > p.y;
+			if (crosses && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y || 1e-12) + a.x) {
+				inside = !inside;
+			}
+		}
+		return inside;
+	}
+
+	function pointInProjectedPolygons(p, polygons) {
+		for (var i = 0; i < polygons.length; i++) {
+			var poly = polygons[i];
+			if (!poly.length || !pointInRingProjected(p, poly[0])) continue;
+			var inHole = false;
+			for (var h = 1; h < poly.length; h++) {
+				if (pointInRingProjected(p, poly[h])) {
+					inHole = true;
+					break;
+				}
+			}
+			if (!inHole) return true;
+		}
+		return false;
+	}
+
+	function forEachCoordPair(coords, cb) {
+		if (!Array.isArray(coords)) return;
+		if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+			cb(coords[0], coords[1]);
+			return;
+		}
+		coords.forEach(function (c) {
+			forEachCoordPair(c, cb);
+		});
+	}
+
+	function projectedLineSegments(geom, originLat) {
+		var segs = [];
+		function addLine(line) {
+			if (!Array.isArray(line)) return;
+			for (var i = 1; i < line.length; i++) {
+				var a = line[i - 1];
+				var b = line[i];
+				if (!Array.isArray(a) || !Array.isArray(b)) continue;
+				segs.push({
+					a: projectedPoint(a[0], a[1], originLat),
+					b: projectedPoint(b[0], b[1], originLat)
+				});
+			}
+		}
+		if (!geom) return segs;
+		if (geom.type === 'LineString') {
+			addLine(geom.coordinates);
+		} else if (geom.type === 'MultiLineString' || geom.type === 'Polygon') {
+			(geom.coordinates || []).forEach(addLine);
+		} else if (geom.type === 'MultiPolygon') {
+			(geom.coordinates || []).forEach(function (poly) {
+				(poly || []).forEach(addLine);
+			});
+		}
+		return segs;
+	}
+
+	function projectedPolygons(geom, originLat) {
+		function ringToProjected(ring) {
+			return (ring || []).map(function (c) {
+				return projectedPoint(c[0], c[1], originLat);
+			});
+		}
+		if (!geom || !geom.coordinates) return [];
+		if (geom.type === 'Polygon') {
+			return [(geom.coordinates || []).map(ringToProjected)];
+		}
+		if (geom.type === 'MultiPolygon') {
+			return (geom.coordinates || []).map(function (poly) {
+				return (poly || []).map(ringToProjected);
+			});
+		}
+		return [];
+	}
+
+	function featureCenterPoint(feature, originLat) {
+		var b = geometryBounds(feature.geometry);
+		if (!b) return null;
+		return {
+			lon: (b.w + b.e) / 2,
+			lat: (b.s + b.n) / 2,
+			p: projectedPoint((b.w + b.e) / 2, (b.s + b.n) / 2, originLat),
+			bounds: b
+		};
+	}
+
+	function buildingSamples(feature, originLat) {
+		var samples = [];
+		var center = featureCenterPoint(feature, originLat);
+		if (center) samples.push(center.p);
+		var every = 1;
+		var count = 0;
+		forEachCoordPair(feature.geometry && feature.geometry.coordinates, function () {
+			count++;
+		});
+		if (count > 24) every = Math.ceil(count / 24);
+		var idx = 0;
+		forEachCoordPair(feature.geometry && feature.geometry.coordinates, function (lon, lat) {
+			if (idx % every === 0) {
+				samples.push(projectedPoint(lon, lat, originLat));
+			}
+			idx++;
+		});
+		return samples;
+	}
+
+	function distanceToBuildingMeters(p, building) {
+		if (pointInProjectedPolygons(p, building.polygons)) return 0;
+		var best = Infinity;
+		for (var i = 0; i < building.segments.length; i++) {
+			best = Math.min(best, distanceToSegmentMeters(p, building.segments[i].a, building.segments[i].b));
+		}
+		return best;
+	}
+
+	function roadBufferMeters(props) {
+		var hw = String(propTag(props, 'highway') || '').toLowerCase();
+		if (!hw) return 0;
+		if (!TERRITORY_CONFIG.useFootwaysAsBarriers && /^(footway|path|pedestrian|steps|cycleway)$/.test(hw)) {
+			return 0;
+		}
+		return TERRITORY_CONFIG.roadBuffers[hw] || TERRITORY_CONFIG.roadBuffers.default;
+	}
+
+	function collectTerritoryInputs(featureStore, bounds) {
+		var originLat = (bounds.getSouth() + bounds.getNorth()) / 2;
+		var inputs = {
+			originLat: originLat,
+			buildings: [],
+			roads: [],
+			railways: [],
+			waters: [],
+			barriers: [],
+			obstacles: [],
+			sourceFeatures: []
+		};
+		Object.keys(featureStore || {}).forEach(function (key) {
+			var feat = featureStore[key];
+			var props = (feat && feat.properties) || {};
+			var kind = props.wscosm_kind || '';
+			var geom = feat && feat.geometry;
+			if (!geom) return;
+			inputs.sourceFeatures.push(feat);
+			if (isBldgKind(kind) && kind !== 'bldg_part') {
+				var center = featureCenterPoint(feat, originLat);
+				var polygons = projectedPolygons(geom, originLat);
+				if (!center || !polygons.length) return;
+				inputs.buildings.push({
+					key: key,
+					feature: feat,
+					props: props,
+					center: center,
+					polygons: polygons,
+					segments: projectedLineSegments(geom, originLat),
+					samples: buildingSamples(feat, originLat),
+					quarterIds: {}
+				});
+				return;
+			}
+			var hwBuffer = roadBufferMeters(props);
+			if (hwBuffer > 0 || kind === 'road') {
+				if (hwBuffer > 0) {
+					inputs.roads.push({ feature: feat, buffer: hwBuffer, segments: projectedLineSegments(geom, originLat) });
+				}
+				return;
+			}
+			if (kind === 'railway' || propTag(props, 'railway')) {
+				inputs.railways.push({ feature: feat, buffer: 10, segments: projectedLineSegments(geom, originLat) });
+				return;
+			}
+			if (kind === 'water' || propTag(props, 'natural') === 'water' || propTag(props, 'waterway')) {
+				inputs.waters.push({
+					feature: feat,
+					buffer: geom.type === 'LineString' || geom.type === 'MultiLineString' ? 8 : 0,
+					segments: projectedLineSegments(geom, originLat),
+					polygons: projectedPolygons(geom, originLat)
+				});
+				return;
+			}
+			if (kind === 'barrier' || /^(fence|wall)$/.test(String(propTag(props, 'barrier')))) {
+				inputs.barriers.push({ feature: feat, buffer: 3, segments: projectedLineSegments(geom, originLat) });
+				return;
+			}
+			if (kind === 'parking' || kind === 'landuse_industrial' || kind === 'landuse_railway') {
+				inputs.obstacles.push({ feature: feat, polygons: projectedPolygons(geom, originLat) });
+			}
+		});
+		return inputs;
+	}
+
+	function minDistanceToBufferedLines(p, items) {
+		var best = Infinity;
+		for (var i = 0; i < items.length; i++) {
+			var item = items[i];
+			for (var s = 0; s < item.segments.length; s++) {
+				best = Math.min(best, distanceToSegmentMeters(p, item.segments[s].a, item.segments[s].b) - item.buffer);
+			}
+		}
+		return best;
+	}
+
+	function isBlockedTerritoryPoint(p, inputs) {
+		if (minDistanceToBufferedLines(p, inputs.roads) <= 0) return true;
+		if (minDistanceToBufferedLines(p, inputs.railways) <= 0) return true;
+		if (minDistanceToBufferedLines(p, inputs.barriers) <= 0) return true;
+		for (var w = 0; w < inputs.waters.length; w++) {
+			if (inputs.waters[w].polygons.length && pointInProjectedPolygons(p, inputs.waters[w].polygons)) return true;
+			if (inputs.waters[w].buffer && minDistanceToBufferedLines(p, [inputs.waters[w]]) <= 0) return true;
+		}
+		for (var o = 0; o < inputs.obstacles.length; o++) {
+			if (pointInProjectedPolygons(p, inputs.obstacles[o].polygons)) return true;
+		}
+		for (var b = 0; b < inputs.buildings.length; b++) {
+			if (pointInProjectedPolygons(p, inputs.buildings[b].polygons)) return true;
+		}
+		return false;
+	}
+
+	function buildFreeGrid(inputs, bounds) {
+		var sw = projectedPoint(bounds.getWest(), bounds.getSouth(), inputs.originLat);
+		var ne = projectedPoint(bounds.getEast(), bounds.getNorth(), inputs.originLat);
+		var width = Math.max(1, ne.x - sw.x);
+		var height = Math.max(1, ne.y - sw.y);
+		var cell = Math.max(
+			TERRITORY_CONFIG.allocationCellMeters,
+			Math.sqrt((width * height) / TERRITORY_CONFIG.maxGridCells)
+		);
+		var nx = Math.max(1, Math.ceil(width / cell));
+		var ny = Math.max(1, Math.ceil(height / cell));
+		var free = new Uint8Array(nx * ny);
+		var comps = new Int32Array(nx * ny);
+		for (var c = 0; c < comps.length; c++) comps[c] = -1;
+		function idx(x, y) {
+			return y * nx + x;
+		}
+		function center(ix, iy) {
+			return { x: sw.x + (ix + 0.5) * cell, y: sw.y + (iy + 0.5) * cell };
+		}
+		for (var iy = 0; iy < ny; iy++) {
+			for (var ix = 0; ix < nx; ix++) {
+				free[idx(ix, iy)] = isBlockedTerritoryPoint(center(ix, iy), inputs) ? 0 : 1;
+			}
+		}
+		var quarters = [];
+		var qid = 0;
+		var q = [];
+		for (iy = 0; iy < ny; iy++) {
+			for (ix = 0; ix < nx; ix++) {
+				var start = idx(ix, iy);
+				if (!free[start] || comps[start] !== -1) continue;
+				var cells = [];
+				q.length = 0;
+				q.push([ix, iy]);
+				comps[start] = qid;
+				while (q.length) {
+					var cur = q.pop();
+					var cx = cur[0];
+					var cy = cur[1];
+					cells.push(cur);
+					[[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+						var nx2 = cx + d[0];
+						var ny2 = cy + d[1];
+						if (nx2 < 0 || nx2 >= nx || ny2 < 0 || ny2 >= ny) return;
+						var ni = idx(nx2, ny2);
+						if (free[ni] && comps[ni] === -1) {
+							comps[ni] = qid;
+							q.push([nx2, ny2]);
+						}
+					});
+				}
+				quarters.push({ id: 'q' + qid, index: qid, cells: cells });
+				qid++;
+			}
+		}
+		return { minX: sw.x, minY: sw.y, cell: cell, nx: nx, ny: ny, free: free, comps: comps, quarters: quarters, idx: idx, center: center };
+	}
+
+	function assignBuildingsToQuarters(inputs, grid) {
+		var searchCells = Math.max(2, Math.ceil(TERRITORY_CONFIG.maxDistanceMeters / grid.cell));
+		inputs.buildings.forEach(function (building) {
+			building.samples.forEach(function (sample) {
+				var ix = Math.floor((sample.x - grid.minX) / grid.cell);
+				var iy = Math.floor((sample.y - grid.minY) / grid.cell);
+				for (var dy = -searchCells; dy <= searchCells; dy++) {
+					for (var dx = -searchCells; dx <= searchCells; dx++) {
+						var x = ix + dx;
+						var y = iy + dy;
+						if (x < 0 || x >= grid.nx || y < 0 || y >= grid.ny) continue;
+						var gi = grid.idx(x, y);
+						var qid = grid.comps[gi];
+						if (qid < 0) continue;
+						var d = distanceToBuildingMeters(grid.center(x, y), building);
+						if (d <= TERRITORY_CONFIG.maxDistanceMeters) {
+							building.quarterIds[qid] = true;
+						}
+					}
+				}
+			});
+		});
+	}
+
+	function ringAreaProjected(ring) {
+		var sum = 0;
+		for (var i = 0; i < ring.length - 1; i++) {
+			sum += ring[i].x * ring[i + 1].y - ring[i + 1].x * ring[i].y;
+		}
+		return sum / 2;
+	}
+
+	function traceCellRings(cells, grid) {
+		var set = {};
+		cells.forEach(function (c) {
+			set[c[0] + ',' + c[1]] = true;
+		});
+		var edges = {};
+		function key(p) {
+			return Math.round(p.x * 1000) + ',' + Math.round(p.y * 1000);
+		}
+		function addEdge(a, b) {
+			var k = key(a);
+			if (!edges[k]) edges[k] = [];
+			edges[k].push({ a: a, b: b, used: false });
+		}
+		cells.forEach(function (c) {
+			var ix = c[0];
+			var iy = c[1];
+			var x0 = grid.minX + ix * grid.cell;
+			var y0 = grid.minY + iy * grid.cell;
+			var x1 = x0 + grid.cell;
+			var y1 = y0 + grid.cell;
+			if (!set[ix + ',' + (iy + 1)]) addEdge({ x: x0, y: y1 }, { x: x1, y: y1 });
+			if (!set[(ix + 1) + ',' + iy]) addEdge({ x: x1, y: y1 }, { x: x1, y: y0 });
+			if (!set[ix + ',' + (iy - 1)]) addEdge({ x: x1, y: y0 }, { x: x0, y: y0 });
+			if (!set[(ix - 1) + ',' + iy]) addEdge({ x: x0, y: y0 }, { x: x0, y: y1 });
+		});
+		var rings = [];
+		Object.keys(edges).forEach(function (startKey) {
+			(edges[startKey] || []).forEach(function (edge) {
+				if (edge.used) return;
+				var ring = [edge.a];
+				var cur = edge;
+				var guard = 0;
+				while (cur && !cur.used && guard++ < 100000) {
+					cur.used = true;
+					ring.push(cur.b);
+					var nextList = edges[key(cur.b)] || [];
+					cur = null;
+					for (var i = 0; i < nextList.length; i++) {
+						if (!nextList[i].used) {
+							cur = nextList[i];
+							break;
+						}
+					}
+					if (ring.length > 3 && key(ring[0]) === key(ring[ring.length - 1])) break;
+				}
+				if (ring.length >= 4 && key(ring[0]) === key(ring[ring.length - 1])) {
+					rings.push(ring);
+				}
+			});
+		});
+		return rings;
+	}
+
+	function cellsToPolygonGeometry(cells, grid, originLat) {
+		var rings = traceCellRings(cells, grid);
+		if (!rings.length) return null;
+		rings.sort(function (a, b) {
+			return Math.abs(ringAreaProjected(b)) - Math.abs(ringAreaProjected(a));
+		});
+		var outer = rings[0];
+		var outerArea = Math.abs(ringAreaProjected(outer));
+		if (outerArea < TERRITORY_CONFIG.minAreaM2) return null;
+		var coords = [
+			closeRing(
+				outer.map(function (p) {
+					return lonLatPoint(p.x, p.y, originLat);
+				})
+			)
+		];
+		for (var i = 1; i < rings.length; i++) {
+			var r = rings[i];
+			if (Math.abs(ringAreaProjected(r)) < TERRITORY_CONFIG.minAreaM2) continue;
+			var mid = r[Math.floor(r.length / 2)];
+			if (!pointInRingProjected(mid, outer)) continue;
+			coords.push(
+				closeRing(
+					r.map(function (p) {
+						return lonLatPoint(p.x, p.y, originLat);
+					})
+				)
+			);
+		}
+		return { type: 'Polygon', coordinates: coords };
+	}
+
+	function splitCellComponents(cells) {
+		var set = {};
+		var visited = {};
+		cells.forEach(function (cell) {
+			set[cell[0] + ',' + cell[1]] = cell;
+		});
+		var components = [];
+		cells.forEach(function (cell) {
+			var startKey = cell[0] + ',' + cell[1];
+			if (visited[startKey]) return;
+			var queue = [cell];
+			var component = [];
+			visited[startKey] = true;
+			while (queue.length) {
+				var cur = queue.pop();
+				component.push(cur);
+				[[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+					var key = cur[0] + d[0] + ',' + (cur[1] + d[1]);
+					if (!set[key] || visited[key]) return;
+					visited[key] = true;
+					queue.push(set[key]);
+				});
+			}
+			components.push(component);
+		});
+		return components;
+	}
+
+	function territoryFeatureBbox(feature) {
+		var b = geometryBounds(feature.geometry);
+		return b || { w: 0, s: 0, e: 0, n: 0 };
+	}
+
+	function bboxesOverlap(a, b) {
+		return a.w < b.e && a.e > b.w && a.s < b.n && a.n > b.s;
+	}
+
+	function validateTerritories(territories) {
+		var valid = [];
+		var overlapCount = 0;
+		for (var i = 0; i < territories.length; i++) {
+			var feat = territories[i];
+			var props = feat.properties || {};
+			if (!props.building_id || !props.quarter_id || !feat.geometry || feat.geometry.type !== 'Polygon') continue;
+			if ((props.area_m2 || 0) < TERRITORY_CONFIG.minAreaM2) continue;
+			valid.push(feat);
+		}
+		for (i = 0; i < valid.length; i++) {
+			var bi = territoryFeatureBbox(valid[i]);
+			for (var j = i + 1; j < valid.length; j++) {
+				if (bboxesOverlap(bi, territoryFeatureBbox(valid[j]))) {
+					overlapCount++;
+				}
+			}
+		}
+		return { features: valid, overlapCount: overlapCount };
+	}
+
+	function makeDebugFeatureCollection(items) {
+		return {
+			type: 'FeatureCollection',
+			features: items
+				.map(function (item) {
+					return item.feature;
+				})
+				.filter(Boolean)
+		};
+	}
+
+	function buildQuarterDebugFeatures(grid, originLat) {
+		return grid.quarters
+			.map(function (q) {
+				var geom = cellsToPolygonGeometry(q.cells, grid, originLat);
+				return geom
+					? { type: 'Feature', geometry: geom, properties: { id: q.id, wscosm_debug: 'quarter' } }
+					: null;
+			})
+			.filter(Boolean);
+	}
+
+	function buildConstrainedTerritories(featureStore, bounds, progress) {
+		var inputs = collectTerritoryInputs(featureStore, bounds);
+		// Глобальный Voronoi нельзя строить по всему viewport: его ячейки легко
+		// перескакивают через дороги, воду и соседние кварталы. Сначала режем
+		// видимую область на свободные компоненты-кварталы по буферам препятствий.
+		var grid = buildFreeGrid(inputs, bounds);
+		assignBuildingsToQuarters(inputs, grid);
+		var byQuarter = {};
+		inputs.buildings.forEach(function (b) {
+			Object.keys(b.quarterIds).forEach(function (qid) {
+				if (!byQuarter[qid]) byQuarter[qid] = [];
+				byQuarter[qid].push(b);
+			});
+		});
+		var assigned = {};
+		var total = grid.quarters.length || 1;
+		grid.quarters.forEach(function (quarter, qi) {
+			var candidates = byQuarter[quarter.index] || [];
+			if (!candidates.length) return;
+			quarter.cells.forEach(function (cell) {
+				var p = grid.center(cell[0], cell[1]);
+				var best = null;
+				var bestDist = Infinity;
+				candidates.forEach(function (building) {
+					var d = distanceToBuildingMeters(p, building);
+					if (d < bestDist) {
+						bestDist = d;
+						best = building;
+					}
+				});
+				if (!best || bestDist > TERRITORY_CONFIG.maxDistanceMeters) return;
+				// maxDistance не даёт участку растягиваться через весь квартал,
+				// если рядом мало зданий или OSM-данные неполные.
+				var key = best.key + '|' + quarter.id;
+				if (!assigned[key]) {
+					assigned[key] = { building: best, quarter: quarter, cells: [] };
+				}
+				assigned[key].cells.push(cell);
+			});
+			if (progress) progress(qi + 1, total);
+		});
+		var features = [];
+		Object.keys(assigned).forEach(function (key) {
+			var bucket = assigned[key];
+			splitCellComponents(bucket.cells).forEach(function (componentCells, componentIndex) {
+				var geom = cellsToPolygonGeometry(componentCells, grid, inputs.originLat);
+				if (!geom) return;
+				var areaM2 = Math.round(componentCells.length * grid.cell * grid.cell * 10) / 10;
+				if (areaM2 < TERRITORY_CONFIG.minAreaM2) return;
+				var props = bucket.building.props || {};
+				var osmId = props.wscosm_osm_id || '';
+				var id = 'territory-' + simpleHash(key + ':' + componentIndex + ':' + areaM2);
+				features.push({
+					type: 'Feature',
+					properties: {
+						id: id,
+						object_key: id,
+						building_id: bucket.building.key,
+						osm_id: osmId,
+						wscosm_kind: props.wscosm_kind || 'bldg_other',
+						wscosm_osm_el_type: props.wscosm_osm_el_type || '',
+						wscosm_osm_id: props.wscosm_osm_id || 0,
+						area_m2: areaM2,
+						quarter_id: bucket.quarter.id,
+						method: 'constrained_voronoi',
+						max_distance_m: TERRITORY_CONFIG.maxDistanceMeters,
+						created_at: new Date().toISOString(),
+						name: props.name || '',
+						title: props.name || bucket.building.key,
+						center: { lat: bucket.building.center.lat, lng: bucket.building.center.lon },
+						lat: bucket.building.center.lat,
+						lng: bucket.building.center.lon
+					},
+					geometry: geom
+				});
+			});
+		});
+		var checked = validateTerritories(features);
+		// Сеточное назначение уже отдаёт каждую свободную ячейку только одному
+		// зданию, но финальная проверка нужна как защита от ошибок сборки полигонов.
+		console.log('[Territory] Buildings:', inputs.buildings.length);
+		console.log('[Territory] Roads:', inputs.roads.length);
+		console.log('[Territory] Quarters:', grid.quarters.length);
+		console.log('[Territory] Generated territories:', checked.features.length);
+		console.log('[Territory] Removed overlaps:', checked.overlapCount);
+		checked.features._territoryDebug = {
+			quarters: buildQuarterDebugFeatures(grid, inputs.originLat),
+			obstacles: makeDebugFeatureCollection(
+				inputs.roads.concat(inputs.railways, inputs.waters, inputs.barriers, inputs.obstacles)
+			),
+			stats: {
+				buildings: inputs.buildings.length,
+				roads: inputs.roads.length,
+				quarters: grid.quarters.length,
+				obstacles: inputs.railways.length + inputs.waters.length + inputs.barriers.length + inputs.obstacles.length,
+				overlaps: checked.overlapCount
+			}
+		};
+		return checked.features;
+	}
+
+	function territoryScanStats(featureStore, bounds) {
+		var inputs = collectTerritoryInputs(featureStore, bounds);
+		var grid = buildFreeGrid(inputs, bounds);
+		return {
+			buildings: inputs.buildings.length,
+			roads: inputs.roads.length,
+			quarters: grid.quarters.length,
+			obstacles: inputs.railways.length + inputs.waters.length + inputs.barriers.length + inputs.obstacles.length
+		};
+	}
+
+	function buildVoronoiFeaturesAsync(featureStore, mapBounds, progress, done) {
+		window.setTimeout(function () {
+			try {
+				var features = buildConstrainedTerritories(featureStore, mapBounds, progress);
+				if (!features.length) {
+					done(new Error('not_enough_buildings'));
+					return;
+				}
+				done(null, features);
+			} catch (err) {
+				console.error('[Territory] Build failed:', err);
+				done(err);
+			}
+		}, 0);
+	}
+
+	function drawTerritoryDebug(debugGroup, debugData) {
+		if (!debugGroup) return;
+		debugGroup.clearLayers();
+		if (!TERRITORY_CONFIG.debug || !debugData) return;
+		var quarters = L.geoJSON({ type: 'FeatureCollection', features: debugData.quarters || [] }, {
+			style: function () {
+				return { fillColor: '#fef3c7', color: '#b45309', weight: 1, opacity: 0.9, fillOpacity: 0.08 };
+			}
+		});
+		var blockers = L.geoJSON(debugData.obstacles || { type: 'FeatureCollection', features: [] }, {
+			style: function (feat) {
+				var kind = feat.properties && feat.properties.wscosm_kind;
+				if (kind === 'water') return { color: '#2563eb', fillColor: '#60a5fa', weight: 2, fillOpacity: 0.22 };
+				if (kind === 'railway' || kind === 'landuse_railway') return { color: '#111827', fillColor: '#9ca3af', weight: 2, fillOpacity: 0.16 };
+				return { color: '#dc2626', fillColor: '#fca5a5', weight: 2, fillOpacity: 0.14 };
+			}
+		});
+		quarters.eachLayer(function (layer) {
+			debugGroup.addLayer(layer);
+		});
+		blockers.eachLayer(function (layer) {
+			debugGroup.addLayer(layer);
+		});
+	}
+
+	function drawVoronoiPreview(voronoiGroup, features, debugGroup) {
 		voronoiGroup.clearLayers();
 		var gj = L.geoJSON({ type: 'FeatureCollection', features: features }, {
 			style: function () {
@@ -747,6 +1371,26 @@
 		gj.eachLayer(function (layer) {
 			voronoiGroup.addLayer(layer);
 		});
+		drawTerritoryDebug(debugGroup, features && features._territoryDebug);
+	}
+
+	function placeTerritoriesBehindBuildings(scanCtx) {
+		if (scanCtx.voronoiGroup && typeof scanCtx.voronoiGroup.eachLayer === 'function') {
+			scanCtx.voronoiGroup.eachLayer(function (layer) {
+				if (layer && typeof layer.bringToBack === 'function') {
+					layer.bringToBack();
+				}
+			});
+		}
+		(scanCtx.kindOrder || []).forEach(function (kind) {
+			var group = scanCtx.kinds && scanCtx.kinds[kind];
+			if (!isBldgKind(kind) || !group || typeof group.eachLayer !== 'function') return;
+			group.eachLayer(function (layer) {
+				if (layer && typeof layer.bringToFront === 'function') {
+					layer.bringToFront();
+				}
+			});
+		});
 	}
 
 	function refreshLayersControl(scanCtx) {
@@ -762,7 +1406,8 @@
 			scanCtx.kindOrder,
 			scanCtx.yardsGroup,
 			scanCtx.centerGroup,
-			scanCtx.voronoiGroup
+			scanCtx.voronoiGroup,
+			scanCtx.territoryDebugGroup
 		);
 		scanCtx.layersControl = L.control.layers(null, ovl, {
 			collapsed: false,
@@ -892,6 +1537,9 @@
 							}
 							scanCtx.voronoiFeatures = [];
 							scanCtx.voronoiGroup.clearLayers();
+							if (scanCtx.territoryDebugGroup) {
+								scanCtx.territoryDebugGroup.clearLayers();
+							}
 							refreshLayersControl(scanCtx);
 							renderBuildingLegend(
 								container,
@@ -901,7 +1549,21 @@
 								scanCtx.labels
 							);
 							if (detailEl) {
-								detailEl.textContent = Ltxt.voronoiRebuildAfterScan || detailEl.textContent;
+								try {
+									var stats = territoryScanStats(scanCtx.osmFeaturesByKey, map.getBounds());
+									detailEl.textContent =
+										(Ltxt.voronoiRebuildAfterScan || detailEl.textContent) +
+										' | buildings: ' +
+										stats.buildings +
+										', roads: ' +
+										stats.roads +
+										', quarters: ' +
+										stats.quarters +
+										', obstacles: ' +
+										stats.obstacles;
+								} catch (errStats) {
+									detailEl.textContent = Ltxt.voronoiRebuildAfterScan || detailEl.textContent;
+								}
 							}
 						})
 						.catch(function () {
@@ -996,8 +1658,7 @@
 					setProgress('build', 0, 0, Ltxt.voronoiBuilding || 'Building Voronoi');
 					buildVoronoiFeaturesAsync(
 						scanCtx.osmFeaturesByKey,
-						scanCtx.d.lat,
-						scanCtx.d.lng,
+						map.getBounds(),
 						function (cur, total) {
 							setProgress('build', cur, total, Ltxt.voronoiBuilding || 'Building Voronoi');
 						},
@@ -1010,8 +1671,9 @@
 								return;
 							}
 							scanCtx.voronoiFeatures = features;
-							drawVoronoiPreview(scanCtx.voronoiGroup, features);
+							drawVoronoiPreview(scanCtx.voronoiGroup, features, scanCtx.territoryDebugGroup);
 							refreshLayersControl(scanCtx);
+							placeTerritoriesBehindBuildings(scanCtx);
 							setProgress('done', features.length, features.length, Ltxt.voronoiReady || 'Ready');
 						}
 					);
@@ -1207,6 +1869,7 @@
 			fillOsmFeaturesIntoKinds(kinds, kindOrder, results[1], ergoCtx, osmSeenKeys, osmFeaturesByKey);
 
 			var voronoiGroup = L.featureGroup();
+			var territoryDebugGroup = L.featureGroup();
 			var overlays = buildOverlaysObject(
 				m,
 				Ltxt,
@@ -1215,7 +1878,8 @@
 				kindOrder,
 				yardsGroup,
 				centerGroup,
-				voronoiGroup
+				voronoiGroup,
+				territoryDebugGroup
 			);
 
 			var layersControl = null;
@@ -1235,6 +1899,7 @@
 				osmSeenKeys: osmSeenKeys,
 				osmFeaturesByKey: osmFeaturesByKey,
 				voronoiGroup: voronoiGroup,
+				territoryDebugGroup: territoryDebugGroup,
 				voronoiFeatures: [],
 				layersControl: layersControl
 			};
