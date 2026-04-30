@@ -9,6 +9,14 @@
 		return;
 	}
 
+	function restFetchOptions() {
+		var opts = { credentials: 'same-origin', cache: 'no-store' };
+		if (cfg.restNonce) {
+			opts.headers = { 'X-WP-Nonce': cfg.restNonce };
+		}
+		return opts;
+	}
+
 	/** Цвета полигонов/точек по категории building=* (совпадает с порядком в PHP). */
 	var BLDS = {
 		bldg_yes: { fill: '#94a3b8', stroke: '#475569' },
@@ -217,7 +225,7 @@
 				encodeURIComponent(ll.lat) +
 				'&lng=' +
 				encodeURIComponent(ll.lng);
-			fetch(u, { credentials: 'same-origin', cache: 'no-store' })
+			fetch(u, restFetchOptions())
 				.then(function (r) {
 					if (!r.ok) {
 						return Promise.reject(new Error('http'));
@@ -505,10 +513,7 @@
 					if (pollBase) {
 						pollTimer = setInterval(function () {
 							var sep = pollBase.indexOf('?') >= 0 ? '&' : '?';
-							fetch(pollBase + sep + 'progress_id=' + encodeURIComponent(progressId), {
-								credentials: 'same-origin',
-								cache: 'no-store'
-							})
+							fetch(pollBase + sep + 'progress_id=' + encodeURIComponent(progressId), restFetchOptions())
 								.then(function (r) {
 									return r.ok ? r.json() : {};
 								})
@@ -520,7 +525,7 @@
 					var reqUrl = scanViewportUrl(scanCtx.d.featuresUrl, map.getBounds(), progressId);
 					btn.disabled = true;
 					btn.classList.add('is-busy');
-					fetch(reqUrl, { credentials: 'same-origin', cache: 'no-store' })
+					fetch(reqUrl, restFetchOptions())
 						.then(function (r) {
 							if (!r.ok) {
 								return Promise.reject(new Error('http'));
@@ -588,7 +593,7 @@
 								var sep2 = pollBase.indexOf('?') >= 0 ? '&' : '?';
 								fetch(
 									pollBase + sep2 + 'progress_id=' + encodeURIComponent(progressId),
-									{ credentials: 'same-origin', cache: 'no-store' }
+									restFetchOptions()
 								)
 									.then(function (r) {
 										return r.ok ? r.json() : {};
@@ -664,7 +669,7 @@
 
 		var yardsGroup = L.featureGroup();
 		var yardsPromise = d.yardsUrl
-			? fetch(d.yardsUrl, { credentials: 'same-origin', cache: 'no-store' })
+			? fetch(d.yardsUrl, restFetchOptions())
 					.then(function (r) {
 						return r.ok ? r.json() : { features: [] };
 					})
@@ -675,7 +680,7 @@
 
 		var osmUrl = d.featuresUrl ? localViewportUrl(d.featuresUrl, m.getBounds()) : '';
 		var osmPromise = osmUrl
-			? fetch(osmUrl, { credentials: 'same-origin', cache: 'no-store' })
+			? fetch(osmUrl, restFetchOptions())
 					.then(function (r) {
 						return r.ok ? r.json() : { features: [] };
 					})

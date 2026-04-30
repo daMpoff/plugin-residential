@@ -246,6 +246,7 @@ class WSCOSM_Country_Tab {
 			[
 				'ajaxUrl'            => admin_url( 'admin-ajax.php' ),
 				'nonce'              => wp_create_nonce( 'wscosm_ct' ),
+				'restNonce'          => wp_create_nonce( 'wp_rest' ),
 				'buildingKindOrder'  => class_exists( 'WSCOSM_Overpass' ) ? WSCOSM_Overpass::building_kind_order() : [],
 				'buildingKindLabels' => class_exists( 'WSCOSM_Overpass' ) ? WSCOSM_Overpass::building_kind_labels_for_js() : [],
 				'scanProgressUrl'    => rest_url( WSCOSM_REST::NS . '/scan-progress' ),
