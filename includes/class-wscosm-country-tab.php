@@ -88,6 +88,7 @@ class WSCOSM_Country_Tab {
 			rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/features' )
 		);
 		$osm_count      = class_exists( 'WSCOSM_Feature_Store' ) ? WSCOSM_Feature_Store::count_for_city( $city_id ) : 0;
+		$osm_buildings_count = class_exists( 'WSCOSM_Feature_Store' ) ? WSCOSM_Feature_Store::count_buildings_for_city( $city_id ) : 0;
 		$yard_ergo_url  = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/yard-ergo-at' );
 		$voronoi_url    = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/voronoi-yards' );
 		$territory_job_url = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/territory-jobs' );
@@ -105,6 +106,7 @@ class WSCOSM_Country_Tab {
 				'zoom'        => 14,
 				'yardsCount'      => $yards_count,
 				'osmObjectsCount' => $osm_count,
+				'osmBuildingsCount' => $osm_buildings_count,
 				'yardsUrl'        => $yards_url,
 				'featuresUrl'     => $features_url,
 				'yardErgoAtUrl'   => $yard_ergo_url,
@@ -287,7 +289,7 @@ class WSCOSM_Country_Tab {
 					'saveVoronoi'     => __( 'Сохранить участки', 'worldstat-courtyard-osm' ),
 					'saveVoronoiHint' => __( 'Сохранить построенные raster-территории в базу WorldStat Ergonomics', 'worldstat-courtyard-osm' ),
 					'voronoiLayer'    => __( 'Raster allocation: предпросмотр', 'worldstat-courtyard-osm' ),
-					'voronoiNoBuildings' => __( 'Не удалось построить участки: нет подходящих зданий или свободной территории. Сначала просканируйте область.', 'worldstat-courtyard-osm' ),
+					'voronoiNoBuildings' => __( 'Не удалось построить расчетные придомовые территории: в базе города нет подходящих контуров зданий или свободной территории вокруг них.', 'worldstat-courtyard-osm' ),
 					'voronoiBuilding' => __( 'Построение raster allocation', 'worldstat-courtyard-osm' ),
 					'voronoiReady'    => __( 'Raster-территории построены', 'worldstat-courtyard-osm' ),
 					'voronoiSaving'   => __( 'Сохранение участков', 'worldstat-courtyard-osm' ),

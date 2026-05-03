@@ -470,31 +470,19 @@ class WSCOSM_REST {
 		}
 		$params = $request->get_json_params();
 		$params = is_array( $params ) ? $params : [];
-		$bounds = isset( $params['bounds'] ) && is_array( $params['bounds'] ) ? $params['bounds'] : $params;
-		$has_bbox = isset( $bounds['south'], $bounds['west'], $bounds['north'], $bounds['east'] );
-		if ( $has_bbox ) {
-			$bbox = WSCOSM_Overpass::normalize_client_bbox(
-				$lat,
-				$lng,
-				[
-					's' => (float) $bounds['south'],
-					'w' => (float) $bounds['west'],
-					'n' => (float) $bounds['north'],
-					'e' => (float) $bounds['east'],
-				]
-			);
-			if ( is_wp_error( $bbox ) ) {
-				return $bbox;
-			}
-		} else {
-			$bbox = WSCOSM_Overpass::bbox_from_center( $lat, $lng, WSCOSM_Overpass::default_radius_km() );
-		}
 		$config = isset( $params['config'] ) && is_array( $params['config'] ) ? $params['config'] : [];
-		$status = WSCOSM_Territory_Job::enqueue( $city_id, $bbox, $config );
+		$dupe_key = 'wscosm_territory_recent_' . md5( ( defined( 'WSCOSM_VERSION' ) ? WSCOSM_VERSION : 'dev' ) . ':' . $city_id . ':' . get_current_user_id() . ':python_worker:' . wp_json_encode( $config ) );
+		$recent = get_transient( $dupe_key );
+		if ( is_array( $recent ) && ! empty( $recent['job_id'] ) ) {
+			return new WP_REST_Response( $recent, 202 );
+		}
+		$status = WSCOSM_Territory_Job::enqueue_city( $city_id, $config );
 		$job_id = (string) ( $status['job_id'] ?? '' );
 		$status['status_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/status' );
 		$status['result_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/result' );
 		$status['activate_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/activate' );
+		$status['mode'] = 'python_worker';
+		set_transient( $dupe_key, $status, 30 );
 		return new WP_REST_Response( $status, 202 );
 	}
 

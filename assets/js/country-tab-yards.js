@@ -51,7 +51,7 @@
 	var TERRITORY_CONFIG = {
 		method: 'server_constrained_distance_allocation',
 		preset: 'high_accuracy',
-		cellSizeMeters: 2,
+		cellSizeMeters: 4,
 		maxDistanceMeters: 35,
 		minAreaM2: 10,
 		useLineOfSightCheck: true,
@@ -1715,6 +1715,22 @@
 		}, 0);
 	}
 
+	function emptyTerritoryResultMessage(fc, scanCtx) {
+		var stats = (fc && fc.stats) || {};
+		var Ltxt = (scanCtx && scanCtx.Ltxt) || {};
+		var osmCount = parseInt(stats.osm_features_count || (scanCtx && scanCtx.d && scanCtx.d.osmObjectsCount) || 0, 10);
+		var bldgCount = parseInt(stats.target_buildings_count || (scanCtx && scanCtx.d && scanCtx.d.osmBuildingsCount) || 0, 10);
+		var skipped = parseInt(stats.skipped_buildings_without_cells || 0, 10);
+		var msg = Ltxt.voronoiNoBuildings || 'No estimated courtyard territories were generated.';
+		if (osmCount > 0 || bldgCount > 0) {
+			msg += ' OSM objects in DB: ' + osmCount + ', suitable buildings: ' + bldgCount + '.';
+		}
+		if (skipped > 0) {
+			msg += ' Buildings without assigned cells: ' + skipped + '.';
+		}
+		return msg;
+	}
+
 	function buildServerTerritoriesAsync(scanCtx, mapBounds, progress, done) {
 		if (!scanCtx.d.territoryJobUrl) {
 			scanCtx.territoryActivateUrl = '';
@@ -1722,16 +1738,24 @@
 			return;
 		}
 		scanCtx.territoryActivateUrl = '';
-		var boundsPayload = {
-			south: mapBounds.getSouth(),
-			west: mapBounds.getWest(),
-			north: mapBounds.getNorth(),
-			east: mapBounds.getEast()
-		};
-		fetch(scanCtx.d.territoryJobUrl, restPostOptions({ bounds: boundsPayload, config: TERRITORY_CONFIG }))
+		fetch(scanCtx.d.territoryJobUrl, restPostOptions({ config: TERRITORY_CONFIG, scope: 'city_sequential' }))
 			.then(function (r) {
-				if (!r.ok) return Promise.reject(new Error('job_start_failed'));
-				return r.json();
+				return r
+					.json()
+					.catch(function () {
+						return {};
+					})
+					.then(function (data) {
+						if (!r.ok) {
+							var msg =
+								(data && (data.message || data.error || data.code)) ||
+								'job_start_failed';
+							var err = new Error(msg);
+							err.details = data;
+							throw err;
+						}
+						return data;
+					});
 			})
 			.then(function (job) {
 				var statusUrl = job.status_url || '';
@@ -1759,7 +1783,7 @@
 										features._territoryDebug = fc && fc.debug ? fc.debug : null;
 										if (!features.length) {
 											scanCtx.territoryActivateUrl = '';
-											done(new Error('not_enough_buildings'));
+											done(new Error(emptyTerritoryResultMessage(fc, scanCtx)));
 											return;
 										}
 										done(null, features);
@@ -2162,9 +2186,13 @@
 						function (err, features) {
 							setBusy(false);
 							if (err || !features || !features.length) {
+								var errMsg =
+									err && err.message && err.message !== 'not_enough_buildings'
+										? err.message
+										: Ltxt.voronoiNoBuildings || Ltxt.voronoiError || 'Error';
 								scanCtx.voronoiFeatures = [];
-								setProgress('error', 1, 1, Ltxt.voronoiNoBuildings || Ltxt.voronoiError || 'Error');
-								window.alert(Ltxt.voronoiNoBuildings || Ltxt.voronoiError || 'Error');
+								setProgress('error', 1, 1, errMsg);
+								window.alert(errMsg);
 								return;
 							}
 							scanCtx.voronoiFeatures = features;
