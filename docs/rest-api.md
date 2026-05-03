@@ -153,3 +153,31 @@ Response:
 ```
 
 Permission matches live scans: `manage_options`, `edit_post(city_id)`, or the `wscosm_can_live_overpass` filter.
+
+## Build Territory Job
+
+```http
+POST /wp-json/wscosm/v1/city/{id}/territory-jobs
+```
+
+Starts server-side constrained territory allocation for the requested map bounds. The frontend sends the high-accuracy preset by default:
+
+```json
+{
+  "bounds": {
+    "south": 53.2,
+    "west": 34.3,
+    "north": 53.21,
+    "east": 34.31
+  },
+  "config": {
+    "preset": "high_accuracy",
+    "cellSizeMeters": 2,
+    "maxDistanceMeters": 35,
+    "useLineOfSightCheck": true,
+    "maxGridCells": 260000
+  }
+}
+```
+
+Completed job stats include `source_preset`, obstacle counts, assigned/unassigned cells, `line_of_sight_rejected_cells`, `distance_median`, and quality `warnings`.

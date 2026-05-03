@@ -49,12 +49,15 @@
 	};
 
 	var TERRITORY_CONFIG = {
-		method: 'raster_nearest_building_allocation',
-		cellSizeMeters: 4,
-		maxDistanceMeters: 50,
+		method: 'server_constrained_distance_allocation',
+		preset: 'high_accuracy',
+		cellSizeMeters: 2,
+		maxDistanceMeters: 35,
 		minAreaM2: 10,
 		useLineOfSightCheck: true,
 		useFootwaysAsBarriers: false,
+		smoothToleranceMeters: 0.75,
+		minHoleAreaM2: 22,
 		simplifyTolerance: 0.00001,
 		roadBuffers: {
 			motorway: 18,
@@ -74,7 +77,7 @@
 			path: 3,
 			default: 8
 		},
-		maxGridCells: 120000,
+		maxGridCells: 260000,
 		maxDebugCells: 1500,
 		debug: false
 	};
@@ -965,11 +968,19 @@
 				});
 				return;
 			}
-			if (kind === 'barrier' || /^(fence|wall)$/.test(String(propTag(props, 'barrier')))) {
+			if (kind === 'barrier' || /^(fence|wall|retaining_wall|hedge)$/.test(String(propTag(props, 'barrier')))) {
 				inputs.barriers.push({ feature: feat, buffer: 3, segments: projectedLineSegments(geom, originLat) });
 				return;
 			}
-			if (kind === 'parking' || kind === 'landuse_industrial' || kind === 'landuse_railway') {
+			if (
+				kind === 'parking' ||
+				kind === 'landuse_industrial' ||
+				kind === 'landuse_railway' ||
+				kind === 'landuse_construction' ||
+				kind === 'landuse_commercial' ||
+				kind === 'landuse_retail' ||
+				kind === 'restricted_area'
+			) {
 				inputs.obstacles.push({
 					feature: feat,
 					polygons: projectedPolygons(geom, originLat),

@@ -29,11 +29,15 @@ class WSCOSM_Territory_Job {
 
 	public static function default_config(): array {
 		return [
-			'cell_size_m'      => 4.0,
-			'max_distance_m'   => 50.0,
+			'preset'           => 'standard',
+			'cell_size_m'      => 3.0,
+			'max_distance_m'   => 38.0,
 			'min_area_m2'      => 10.0,
-			'max_grid_cells'   => 120000,
+			'max_grid_cells'   => 160000,
+			'use_line_of_sight'=> true,
 			'use_footways'     => false,
+			'smooth_tolerance_m' => 0.0,
+			'min_hole_area_m2' => 18.0,
 			'road_buffers'     => [
 				'motorway'     => 18.0,
 				'motorway_link'=> 12.0,
@@ -62,7 +66,10 @@ class WSCOSM_Territory_Job {
 			'maxDistanceMeters'     => 'max_distance_m',
 			'minAreaM2'             => 'min_area_m2',
 			'maxGridCells'          => 'max_grid_cells',
+			'useLineOfSightCheck'   => 'use_line_of_sight',
 			'useFootwaysAsBarriers' => 'use_footways',
+			'smoothToleranceMeters' => 'smooth_tolerance_m',
+			'minHoleAreaM2'         => 'min_hole_area_m2',
 			'roadBuffers'           => 'road_buffers',
 		];
 		foreach ( $map as $from => $to ) {
@@ -70,12 +77,31 @@ class WSCOSM_Territory_Job {
 				$config[ $to ] = $config[ $from ];
 			}
 		}
+		$preset = sanitize_key( (string) ( $config['preset'] ?? $defaults['preset'] ) );
+		if ( $preset === 'high_accuracy' ) {
+			$defaults = array_merge(
+				$defaults,
+				[
+					'preset'             => 'high_accuracy',
+					'cell_size_m'        => 2.0,
+					'max_distance_m'     => 35.0,
+					'max_grid_cells'     => 260000,
+					'use_line_of_sight'  => true,
+					'smooth_tolerance_m' => 0.75,
+					'min_hole_area_m2'   => 22.0,
+				]
+			);
+		}
 		$out = array_merge( $defaults, $config );
+		$out['preset']         = in_array( sanitize_key( (string) $out['preset'] ), [ 'standard', 'high_accuracy' ], true ) ? sanitize_key( (string) $out['preset'] ) : 'standard';
 		$out['cell_size_m']    = max( 1.0, (float) $out['cell_size_m'] );
 		$out['max_distance_m'] = max( 1.0, (float) $out['max_distance_m'] );
 		$out['min_area_m2']    = max( 0.0, (float) $out['min_area_m2'] );
 		$out['max_grid_cells'] = max( 100, (int) $out['max_grid_cells'] );
+		$out['use_line_of_sight'] = (bool) $out['use_line_of_sight'];
 		$out['use_footways']   = (bool) $out['use_footways'];
+		$out['smooth_tolerance_m'] = max( 0.0, min( (float) $out['smooth_tolerance_m'], (float) $out['cell_size_m'] * 0.5 ) );
+		$out['min_hole_area_m2'] = max( 0.0, (float) $out['min_hole_area_m2'] );
 		if ( ! is_array( $out['road_buffers'] ) ) {
 			$out['road_buffers'] = $defaults['road_buffers'];
 		} else {
@@ -234,20 +260,30 @@ class WSCOSM_Territory_Job {
 		$progress( 'grid', 0, 1, 'Building free grid' );
 		$grid = self::build_grid( $bbox, $origin_lat, $inputs, $config );
 		$progress( 'allocation', 0, max( 1, $grid['free_count'] ), 'Allocating cells' );
-		$allocation = self::allocate_cells( $grid, $inputs['buildings'], $config, $progress );
+		$allocation = self::allocate_cells( $grid, $inputs, $config, $progress );
 		$progress( 'polygonize', 0, max( 1, count( $allocation['by_building'] ) ), 'Polygonizing' );
-		$territories = self::polygonize( $allocation['by_building'], $grid, $origin_lat, $config, $inputs['buildings'] );
+		$territories = self::polygonize( $allocation['by_building'], $grid, $origin_lat, $config, $inputs['buildings'], $inputs, $allocation['meta'] );
+		$warnings = self::quality_warnings( $inputs, $grid, $allocation, $territories );
 		$stats = [
 			'method'          => self::METHOD,
+			'source_preset'   => (string) $config['preset'],
 			'buildings'       => count( $inputs['buildings'] ),
 			'roads'           => count( $inputs['roads'] ),
+			'railways'        => count( $inputs['railways'] ),
+			'waters'          => count( $inputs['waters'] ),
+			'barriers'        => count( $inputs['barriers'] ),
+			'area_obstacles'  => count( $inputs['areas'] ),
 			'obstacles'       => count( $inputs['buildings'] ) + count( $inputs['roads'] ) + count( $inputs['railways'] ) + count( $inputs['waters'] ) + count( $inputs['barriers'] ) + count( $inputs['areas'] ),
 			'grid_cells'      => $grid['nx'] * $grid['ny'],
 			'free_cells'      => $grid['free_count'],
 			'assigned_cells'  => $allocation['assigned_count'],
+			'unassigned_cells'=> max( 0, (int) $grid['free_count'] - (int) $allocation['assigned_count'] ),
+			'line_of_sight_rejected_cells' => (int) $allocation['line_of_sight_rejected'],
 			'territories'     => count( $territories ),
 			'cell_size_m'     => $grid['cell'],
 			'max_distance_m'  => (float) $config['max_distance_m'],
+			'distance_median' => self::median( $allocation['distances'] ),
+			'warnings'        => $warnings,
 		];
 		return [
 			'type'     => 'FeatureCollection',
@@ -313,11 +349,11 @@ class WSCOSM_Territory_Job {
 				];
 				continue;
 			}
-			if ( $kind === 'barrier' || preg_match( '/^(fence|wall)$/', self::prop_tag( $props, 'barrier' ) ) ) {
+			if ( $kind === 'barrier' || preg_match( '/^(fence|wall|retaining_wall|hedge)$/', self::prop_tag( $props, 'barrier' ) ) ) {
 				$inputs['barriers'][] = [ 'buffer' => 3.0, 'segments' => self::projected_segments( $geom, $origin_lat ), 'feature' => $feature ];
 				continue;
 			}
-			if ( in_array( $kind, [ 'parking', 'landuse_industrial', 'landuse_railway' ], true ) ) {
+			if ( in_array( $kind, [ 'parking', 'landuse_industrial', 'landuse_railway', 'landuse_construction', 'landuse_commercial', 'landuse_retail', 'restricted_area' ], true ) ) {
 				$inputs['areas'][] = [ 'polygons' => self::projected_polygons( $geom, $origin_lat ), 'feature' => $feature ];
 			}
 		}
@@ -357,7 +393,8 @@ class WSCOSM_Territory_Job {
 		];
 	}
 
-	private static function allocate_cells( array $grid, array $buildings, array $config, callable $progress ): array {
+	private static function allocate_cells( array $grid, array $inputs, array $config, callable $progress ): array {
+		$buildings = $inputs['buildings'];
 		$nx = (int) $grid['nx'];
 		$ny = (int) $grid['ny'];
 		$cell = (float) $grid['cell'];
@@ -429,21 +466,56 @@ class WSCOSM_Territory_Job {
 			}
 		}
 		$by_building = [];
+		$meta = [];
+		$building_map = [];
+		foreach ( $buildings as $building ) {
+			$building_map[ $building['key'] ] = $building;
+		}
 		$assigned = 0;
+		$line_of_sight_rejected = 0;
+		$distances = [];
 		for ( $idx = 0; $idx < $total; $idx++ ) {
 			if ( $owner[ $idx ] === '' ) {
 				continue;
 			}
-			++$assigned;
-			if ( ! isset( $by_building[ $owner[ $idx ] ] ) ) {
-				$by_building[ $owner[ $idx ] ] = [];
+			$owner_key = $owner[ $idx ];
+			$building = $building_map[ $owner_key ] ?? null;
+			if ( $building && ! empty( $config['use_line_of_sight'] ) ) {
+				$p = self::grid_center( $grid, $idx % $nx, intdiv( $idx, $nx ) );
+				$blocked_by = self::path_blocked_by( $p, $building, $inputs );
+				if ( $blocked_by !== '' ) {
+					++$line_of_sight_rejected;
+					if ( ! isset( $meta[ $owner_key ] ) ) {
+						$meta[ $owner_key ] = [ 'distances' => [], 'blocked_by' => [] ];
+					}
+					$meta[ $owner_key ]['blocked_by'][ $blocked_by ] = true;
+					continue;
+				}
 			}
-			$by_building[ $owner[ $idx ] ][] = [ $idx % $nx, intdiv( $idx, $nx ) ];
+			++$assigned;
+			if ( ! isset( $by_building[ $owner_key ] ) ) {
+				$by_building[ $owner_key ] = [];
+			}
+			if ( ! isset( $meta[ $owner_key ] ) ) {
+				$meta[ $owner_key ] = [ 'distances' => [], 'blocked_by' => [] ];
+			}
+			$cell_distance = is_finite( (float) $dist[ $idx ] ) ? round( (float) $dist[ $idx ], 2 ) : null;
+			if ( $cell_distance !== null ) {
+				$meta[ $owner_key ]['distances'][] = $cell_distance;
+				$distances[] = $cell_distance;
+			}
+			$by_building[ $owner_key ][] = [ $idx % $nx, intdiv( $idx, $nx ) ];
 		}
-		return [ 'by_building' => $by_building, 'assigned_count' => $assigned ];
+		return [
+			'by_building'            => $by_building,
+			'assigned_count'         => $assigned,
+			'line_of_sight_rejected' => $line_of_sight_rejected,
+			'distances'              => $distances,
+			'meta'                   => $meta,
+		];
 	}
 
-	private static function polygonize( array $by_building, array $grid, float $origin_lat, array $config, array $buildings ): array {
+	private static function polygonize( array $by_building, array $grid, float $origin_lat, array $config, array $buildings, array $inputs, array $meta ): array {
 		$out = [];
 		$idx = 0;
 		$building_map = [];
@@ -454,8 +526,14 @@ class WSCOSM_Territory_Job {
 			$building = $building_map[ $building_key ] ?? null;
 			$building_props = is_array( $building['props'] ?? null ) ? $building['props'] : [];
 			$center_ll = $building ? self::lon_lat_point( (float) $building['center']['x'], (float) $building['center']['y'], $origin_lat ) : [ 0, 0 ];
+			$building_meta = is_array( $meta[ $building_key ] ?? null ) ? $meta[ $building_key ] : [];
+			$blocked_by = array_keys( is_array( $building_meta['blocked_by'] ?? null ) ? $building_meta['blocked_by'] : [] );
+			$quality_flags = [];
+			if ( ! empty( $blocked_by ) ) {
+				$quality_flags[] = 'line_of_sight_trimmed';
+			}
 			foreach ( self::split_components( $cells ) as $component_index => $component ) {
-				$geom = self::cells_to_polygon( $component, $grid, $origin_lat );
+				$geom = self::cells_to_polygon( $component, $grid, $origin_lat, $config, $inputs );
 				if ( ! $geom ) {
 					continue;
 				}
@@ -476,8 +554,12 @@ class WSCOSM_Territory_Job {
 						'wscosm_osm_id'  => (int) ( $building_props['wscosm_osm_id'] ?? 0 ),
 						'area_m2'        => $area,
 						'method'         => self::METHOD,
+						'source_preset'  => (string) $config['preset'],
 						'cell_size_m'    => round( (float) $grid['cell'], 2 ),
 						'max_distance_m' => (float) $config['max_distance_m'],
+						'distance_median'=> self::median( is_array( $building_meta['distances'] ?? null ) ? $building_meta['distances'] : [] ),
+						'quality_flags'  => $quality_flags,
+						'blocked_by'     => $blocked_by,
 						'created_at'     => gmdate( 'c' ),
 						'name'           => (string) ( $building_props['name'] ?? '' ),
 						'title'          => (string) ( $building_props['name'] ?? $building_key ),
@@ -524,7 +606,7 @@ class WSCOSM_Territory_Job {
 		return $out;
 	}
 
-	private static function cells_to_polygon( array $cells, array $grid, float $origin_lat ): ?array {
+	private static function cells_to_polygon( array $cells, array $grid, float $origin_lat, array $config, array $inputs ): ?array {
 		$set = [];
 		foreach ( $cells as $cell ) {
 			$set[ $cell[0] . ',' . $cell[1] ] = true;
@@ -596,18 +678,25 @@ class WSCOSM_Territory_Job {
 			}
 		);
 		$coords = [];
-		foreach ( $rings as $ring ) {
+		foreach ( $rings as $ring_index => $ring ) {
+			if ( $ring_index > 0 ) {
+				$hole_area = abs( self::grid_ring_area( $ring ) ) * (float) $grid['cell'] * (float) $grid['cell'];
+				if ( $hole_area < (float) $config['min_hole_area_m2'] ) {
+					continue;
+				}
+			}
 			$simp = self::simplify_collinear_ring_grid( $ring );
 			if ( count( $simp ) < 4 ) {
 				$simp = $ring;
 			}
+			$simp = self::smooth_ring_grid( $simp, $grid, $config, $inputs );
 			$coords[] = array_map(
 				static function ( array $v ) use ( $grid, $origin_lat ): array {
 					$x = $grid['min_x'] + $v[0] * $grid['cell'];
 					$y = $grid['min_y'] + $v[1] * $grid['cell'];
 					return self::lon_lat_point( $x, $y, $origin_lat );
 				},
-				$ring
+				$simp
 			);
 		}
 		if ( empty( $coords ) ) {
@@ -710,6 +799,62 @@ class WSCOSM_Territory_Job {
 		return $simplified;
 	}
 
+	private static function smooth_ring_grid( array $ring, array $grid, array $config, array $inputs ): array {
+		$tolerance_m = (float) ( $config['smooth_tolerance_m'] ?? 0.0 );
+		if ( $tolerance_m <= 0.0 || count( $ring ) <= 8 ) {
+			return $ring;
+		}
+		$closed = count( $ring ) > 1 && $ring[0][0] === $ring[ count( $ring ) - 1 ][0] && $ring[0][1] === $ring[ count( $ring ) - 1 ][1];
+		if ( ! $closed ) {
+			return $ring;
+		}
+		$pts = array_slice( $ring, 0, -1 );
+		$tol_grid = min( 0.5, $tolerance_m / max( 0.1, (float) $grid['cell'] ) );
+		for ( $pass = 0; $pass < 2; $pass++ ) {
+			$count = count( $pts );
+			if ( $count <= 4 ) {
+				break;
+			}
+			$next = [];
+			for ( $i = 0; $i < $count; $i++ ) {
+				$prev = $pts[ ( $i + $count - 1 ) % $count ];
+				$cur  = $pts[ $i ];
+				$after = $pts[ ( $i + 1 ) % $count ];
+				$d = self::distance_to_grid_segment( $cur, $prev, $after );
+				if ( $d <= $tol_grid && self::grid_segment_is_clear( $prev, $after, $grid, $inputs ) ) {
+					continue;
+				}
+				$next[] = $cur;
+			}
+			if ( count( $next ) === $count || count( $next ) < 4 ) {
+				break;
+			}
+			$pts = $next;
+		}
+		$pts[] = $pts[0];
+		return $pts;
+	}
+
+	private static function distance_to_grid_segment( array $p, array $a, array $b ): float {
+		return self::distance_to_segment(
+			[ 'x' => (float) $p[0], 'y' => (float) $p[1] ],
+			[ 'x' => (float) $a[0], 'y' => (float) $a[1] ],
+			[ 'x' => (float) $b[0], 'y' => (float) $b[1] ]
+		);
+	}
+
+	private static function grid_segment_is_clear( array $a, array $b, array $grid, array $inputs ): bool {
+		$pa = [
+			'x' => $grid['min_x'] + (float) $a[0] * (float) $grid['cell'],
+			'y' => $grid['min_y'] + (float) $a[1] * (float) $grid['cell'],
+		];
+		$pb = [
+			'x' => $grid['min_x'] + (float) $b[0] * (float) $grid['cell'],
+			'y' => $grid['min_y'] + (float) $b[1] * (float) $grid['cell'],
+		];
+		return self::line_blocked_by( $pa, $pb, $inputs ) === '';
+	}
+
 	private static function is_blocked_point( array $p, array $inputs ): bool {
 		foreach ( $inputs['buildings'] as $building ) {
 			if ( self::point_in_polygons( $p, $building['polygons'] ) ) {
@@ -745,6 +890,58 @@ class WSCOSM_Territory_Job {
 			}
 		}
 		return $best;
+	}
+
+	private static function path_blocked_by( array $p, array $building, array $inputs ): string {
+		$target = is_array( $building['center'] ?? null ) ? $building['center'] : null;
+		if ( ! $target ) {
+			return '';
+		}
+		return self::line_blocked_by( $p, $target, $inputs );
+	}
+
+	private static function line_blocked_by( array $a, array $b, array $inputs ): string {
+		foreach ( [ 'roads' => 'road', 'railways' => 'railway', 'barriers' => 'barrier' ] as $key => $label ) {
+			if ( self::segment_distance_to_buffered_lines( $a, $b, $inputs[ $key ] ) <= 0.0 ) {
+				return $label;
+			}
+		}
+		foreach ( $inputs['waters'] as $water ) {
+			if ( ! empty( $water['polygons'] ) && self::line_hits_polygons( $a, $b, $water['polygons'] ) ) {
+				return 'water';
+			}
+			if ( (float) ( $water['buffer'] ?? 0 ) > 0 && self::segment_distance_to_buffered_lines( $a, $b, [ $water ] ) <= 0.0 ) {
+				return 'water';
+			}
+		}
+		foreach ( $inputs['areas'] as $area ) {
+			if ( self::line_hits_polygons( $a, $b, $area['polygons'] ) ) {
+				return 'area_obstacle';
+			}
+		}
+		return '';
+	}
+
+	private static function segment_distance_to_buffered_lines( array $a, array $b, array $items ): float {
+		$best = INF;
+		foreach ( $items as $item ) {
+			foreach ( $item['segments'] ?? [] as $seg ) {
+				$best = min( $best, self::segment_to_segment_distance( $a, $b, $seg['a'], $seg['b'] ) - (float) ( $item['buffer'] ?? 0 ) );
+			}
+		}
+		return $best;
+	}
+
+	private static function segment_to_segment_distance( array $a, array $b, array $c, array $d ): float {
+		if ( self::segments_intersect( $a, $b, $c, $d ) ) {
+			return 0.0;
+		}
+		return min(
+			self::distance_to_segment( $a, $c, $d ),
+			self::distance_to_segment( $b, $c, $d ),
+			self::distance_to_segment( $c, $a, $b ),
+			self::distance_to_segment( $d, $a, $b )
+		);
 	}
 
 	private static function distance_to_building( array $p, array $building ): float {
@@ -801,6 +998,55 @@ class WSCOSM_Territory_Job {
 			}
 		}
 		return $inside;
+	}
+
+	private static function line_hits_polygons( array $a, array $b, array $polygons ): bool {
+		foreach ( $polygons as $poly ) {
+			if ( empty( $poly[0] ) ) {
+				continue;
+			}
+			if ( self::point_in_polygons( $a, [ $poly ] ) || self::point_in_polygons( $b, [ $poly ] ) ) {
+				return true;
+			}
+			foreach ( $poly as $ring ) {
+				for ( $i = 1; $i < count( $ring ); $i++ ) {
+					if ( self::segments_intersect( $a, $b, $ring[ $i - 1 ], $ring[ $i ] ) ) {
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}
+
+	private static function segments_intersect( array $a, array $b, array $c, array $d ): bool {
+		$o1 = self::orientation( $a, $b, $c );
+		$o2 = self::orientation( $a, $b, $d );
+		$o3 = self::orientation( $c, $d, $a );
+		$o4 = self::orientation( $c, $d, $b );
+		if ( $o1 !== $o2 && $o3 !== $o4 ) {
+			return true;
+		}
+		return ( $o1 === 0 && self::point_on_segment( $c, $a, $b ) )
+			|| ( $o2 === 0 && self::point_on_segment( $d, $a, $b ) )
+			|| ( $o3 === 0 && self::point_on_segment( $a, $c, $d ) )
+			|| ( $o4 === 0 && self::point_on_segment( $b, $c, $d ) );
+	}
+
+	private static function orientation( array $a, array $b, array $c ): int {
+		$val = ( (float) $b['y'] - (float) $a['y'] ) * ( (float) $c['x'] - (float) $b['x'] )
+			- ( (float) $b['x'] - (float) $a['x'] ) * ( (float) $c['y'] - (float) $b['y'] );
+		if ( abs( $val ) < 1e-9 ) {
+			return 0;
+		}
+		return $val > 0 ? 1 : 2;
+	}
+
+	private static function point_on_segment( array $p, array $a, array $b ): bool {
+		return (float) $p['x'] <= max( (float) $a['x'], (float) $b['x'] ) + 1e-9
+			&& (float) $p['x'] + 1e-9 >= min( (float) $a['x'], (float) $b['x'] )
+			&& (float) $p['y'] <= max( (float) $a['y'], (float) $b['y'] ) + 1e-9
+			&& (float) $p['y'] + 1e-9 >= min( (float) $a['y'], (float) $b['y'] );
 	}
 
 	private static function projected_polygons( array $geom, float $origin_lat ): array {
@@ -942,6 +1188,49 @@ class WSCOSM_Territory_Job {
 			return $osm_type . ':' . $osm_id;
 		}
 		return 'building_' . substr( md5( wp_json_encode( $geom ) ), 0, 12 );
+	}
+
+	private static function median( array $values ): ?float {
+		$values = array_values(
+			array_filter(
+				array_map( 'floatval', $values ),
+				static function ( float $v ): bool {
+					return is_finite( $v );
+				}
+			)
+		);
+		$count = count( $values );
+		if ( $count === 0 ) {
+			return null;
+		}
+		sort( $values, SORT_NUMERIC );
+		$mid = intdiv( $count, 2 );
+		if ( $count % 2 === 1 ) {
+			return round( $values[ $mid ], 2 );
+		}
+		return round( ( $values[ $mid - 1 ] + $values[ $mid ] ) / 2.0, 2 );
+	}
+
+	private static function quality_warnings( array $inputs, array $grid, array $allocation, array $territories ): array {
+		$warnings = [];
+		if ( count( $inputs['buildings'] ) === 0 ) {
+			$warnings[] = 'no_buildings';
+		}
+		if ( count( $inputs['roads'] ) === 0 && count( $inputs['barriers'] ) === 0 ) {
+			$warnings[] = 'few_osm_boundaries';
+		}
+		$free = max( 1, (int) $grid['free_count'] );
+		$assigned_ratio = (int) $allocation['assigned_count'] / $free;
+		if ( $assigned_ratio < 0.15 && count( $inputs['buildings'] ) > 0 ) {
+			$warnings[] = 'low_assigned_area';
+		}
+		if ( ! empty( $allocation['line_of_sight_rejected'] ) ) {
+			$warnings[] = 'line_of_sight_trimmed';
+		}
+		if ( empty( $territories ) && count( $inputs['buildings'] ) > 0 ) {
+			$warnings[] = 'no_valid_territories';
+		}
+		return array_values( array_unique( $warnings ) );
 	}
 
 	private static function status_key( string $job_id ): string {

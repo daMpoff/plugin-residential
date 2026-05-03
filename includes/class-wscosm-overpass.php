@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class WSCOSM_Overpass {
 
-	public const QUERY_VERSION = 6;
+	public const QUERY_VERSION = 7;
 
 	/**
 	 * URL интерпретатора (можно переопределить фильтром).
@@ -146,11 +146,13 @@ class WSCOSM_Overpass {
   way["natural"="water"]({$s},{$w},{$n},{$e});
   relation["natural"="water"]({$s},{$w},{$n},{$e});
   way["waterway"]({$s},{$w},{$n},{$e});
-  way["barrier"~"^(fence|wall)$"]({$s},{$w},{$n},{$e});
+  way["barrier"~"^(fence|wall|retaining_wall|hedge)$"]({$s},{$w},{$n},{$e});
   way["amenity"="parking"]({$s},{$w},{$n},{$e});
-  way["landuse"~"^(industrial|railway)$"]({$s},{$w},{$n},{$e});
-  relation["landuse"~"^(industrial|railway)$"]({$s},{$w},{$n},{$e});
+  relation["amenity"="parking"]({$s},{$w},{$n},{$e});
+  way["landuse"~"^(industrial|railway|construction|commercial|retail)$"]({$s},{$w},{$n},{$e});
+  relation["landuse"~"^(industrial|railway|construction|commercial|retail)$"]({$s},{$w},{$n},{$e});
   way["leisure"="playground"]({$s},{$w},{$n},{$e});
+  relation["leisure"="playground"]({$s},{$w},{$n},{$e});
   way["landuse"~"^(grass|meadow|recreation_ground)$"]({$s},{$w},{$n},{$e});
 );
 out geom;
@@ -402,12 +404,27 @@ OQ;
 			if ( ( $tags['natural'] ?? '' ) === 'water' ) {
 				return 'water';
 			}
+			if ( ( $tags['amenity'] ?? '' ) === 'parking' ) {
+				return 'parking';
+			}
+			if ( ( $tags['leisure'] ?? '' ) === 'playground' ) {
+				return 'playground';
+			}
 			$lu = (string) ( $tags['landuse'] ?? '' );
 			if ( $lu === 'industrial' ) {
 				return 'landuse_industrial';
 			}
 			if ( $lu === 'railway' ) {
 				return 'landuse_railway';
+			}
+			if ( $lu === 'construction' ) {
+				return 'landuse_construction';
+			}
+			if ( $lu === 'commercial' ) {
+				return 'landuse_commercial';
+			}
+			if ( $lu === 'retail' ) {
+				return 'landuse_retail';
 			}
 		}
 		if ( $t === 'way' ) {
@@ -429,7 +446,7 @@ OQ;
 				return 'water';
 			}
 			$barrier = (string) ( $tags['barrier'] ?? '' );
-			if ( $barrier !== '' && preg_match( '/^(fence|wall)$/', $barrier ) ) {
+			if ( $barrier !== '' && preg_match( '/^(fence|wall|retaining_wall|hedge)$/', $barrier ) ) {
 				return 'barrier';
 			}
 			if ( ( $tags['amenity'] ?? '' ) === 'parking' ) {
@@ -444,6 +461,15 @@ OQ;
 			}
 			if ( $lu === 'railway' ) {
 				return 'landuse_railway';
+			}
+			if ( $lu === 'construction' ) {
+				return 'landuse_construction';
+			}
+			if ( $lu === 'commercial' ) {
+				return 'landuse_commercial';
+			}
+			if ( $lu === 'retail' ) {
+				return 'landuse_retail';
 			}
 			if ( $lu !== '' && preg_match( '/^(grass|meadow|recreation_ground)$/', $lu ) ) {
 				return 'landuse_green';
@@ -662,6 +688,9 @@ OQ;
 				|| $kind === 'parking'
 				|| $kind === 'landuse_industrial'
 				|| $kind === 'landuse_railway'
+				|| $kind === 'landuse_construction'
+				|| $kind === 'landuse_commercial'
+				|| $kind === 'landuse_retail'
 				|| strncmp( $kind, 'bldg_', 5 ) === 0
 			);
 			if ( $as_poly ) {
