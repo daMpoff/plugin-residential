@@ -109,4 +109,43 @@ class WSCOSM_Log {
 		];
 		self::error( $scope, $err->get_error_message(), $ctx, $city_id );
 	}
+
+	/**
+	 * Лог прогресса массового пересчёта эргономики (php error_log; при WP_DEBUG_LOG — в debug.log).
+	 * Отключить: add_filter( 'wscosm_ergo_recalc_log_enabled', '__return_false' );
+	 *
+	 * @param array<string, mixed> $context
+	 */
+	public static function ergo_recalc( string $event, array $context, ?int $city_id = null ): void {
+		if ( ! (bool) apply_filters( 'wscosm_ergo_recalc_log_enabled', true ) ) {
+			return;
+		}
+		if ( $city_id !== null && $city_id > 0 && ! isset( $context['city_id'] ) ) {
+			$context = array_merge( [ 'city_id' => $city_id ], $context );
+		}
+		$json = wp_json_encode( $context, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE );
+		$tail = is_string( $json ) ? $json : '{}';
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- явный диагностический поток.
+		error_log( '[WSCOSM][ergo_recalc][' . sanitize_key( $event ) . '] ' . $tail );
+	}
+
+	/**
+	 * Человекочитаемая длительность (RU).
+	 */
+	public static function format_duration_ru( float $seconds ): string {
+		if ( ! is_finite( $seconds ) || $seconds < 0 ) {
+			return '—';
+		}
+		if ( $seconds < 60 ) {
+			return sprintf( '%d с', max( 0, (int) round( $seconds ) ) );
+		}
+		if ( $seconds < 3600 ) {
+			$m = (int) floor( $seconds / 60 );
+			$s = (int) round( $seconds - ( $m * 60 ) );
+			return sprintf( '%d мин %d с', $m, $s );
+		}
+		$h = (int) floor( $seconds / 3600 );
+		$m = (int) floor( ( $seconds - $h * 3600 ) / 60 );
+		return sprintf( '%d ч %d мин', $h, $m );
+	}
 }

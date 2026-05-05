@@ -4,14 +4,6 @@
 	overflow: hidden;
 }
 
-.wscosm-dim-legend__list {
-	margin: 0.5rem 0 0;
-	padding-left: 1.25rem;
-	max-width: 52rem;
-	line-height: 1.5;
-	color: var(--wsp-text-muted, #475569);
-}
-
 .wscosm-ct-label {
 	display: block;
 	margin-bottom: 0.35rem;
@@ -24,42 +16,6 @@
 
 .wscosm-ct-stats {
 	margin: 0 0 0.5rem;
-}
-
-.wscosm-scan-progress-row {
-	margin-bottom: 0.65rem;
-}
-
-.wscosm-scan-progress-row[hidden] {
-	display: none !important;
-}
-
-.wscosm-scan-progress__label {
-	font-size: 13px;
-	font-weight: 600;
-	margin-bottom: 0.35rem;
-	color: var(--wsp-text, #334155);
-}
-
-.wscosm-scan-progress {
-	height: 10px;
-	background: var(--wsp-border, #e5e7eb);
-	border-radius: 5px;
-	overflow: hidden;
-}
-
-.wscosm-scan-progress__bar {
-	height: 100%;
-	width: 0;
-	background: #15803d;
-	border-radius: 5px;
-	transition: width 0.2s ease-out;
-}
-
-.wscosm-scan-progress__detail {
-	margin: 0.35rem 0 0;
-	font-size: 12px;
-	color: var(--wsp-text-muted, #64748b);
 }
 
 .wscosm-ct-loading {
@@ -81,45 +37,6 @@
 
 .leaflet-top.leaflet-right {
 	z-index: 900;
-}
-
-.wscosm-bldg-legend {
-	margin: 0.5rem 0 0;
-	padding: 0.65rem 0.85rem;
-	max-width: 28rem;
-	font-size: 12px;
-	line-height: 1.35;
-	border: 1px solid var(--wsp-border, #e5e7eb);
-	border-radius: 4px;
-	background: var(--wsp-surface, #fff);
-	color: var(--wsp-text, #334155);
-}
-
-.wscosm-bldg-legend__title {
-	font-weight: 600;
-	margin-bottom: 0.4rem;
-	font-size: 13px;
-}
-
-.wscosm-bldg-legend__row {
-	display: flex;
-	align-items: center;
-	gap: 0.5rem;
-	margin: 0.2rem 0;
-}
-
-.wscosm-bldg-legend__sw {
-	display: inline-block;
-	width: 14px;
-	height: 14px;
-	border-radius: 2px;
-	border: 2px solid #475569;
-	flex-shrink: 0;
-}
-
-.wscosm-bldg-legend__txt {
-	flex: 1;
-	min-width: 0;
 }
 
 .leaflet-bar.wscosm-scan-wrap {
@@ -152,36 +69,129 @@
 	cursor: wait;
 }
 
-.leaflet-bar.wscosm-voronoi-wrap {
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
-	border: none;
-	box-shadow: none;
-	background: transparent;
-}
-
-.wscosm-voronoi-btn {
-	display: block;
-	padding: 6px 10px;
-	font-size: 13px;
-	line-height: 1.2;
-	font-weight: 600;
-	cursor: pointer;
-	color: #1e293b;
+.wscosm-house-panel {
+	border: 1px solid var(--wsp-border, #e5e7eb);
+	border-radius: 6px;
+	padding: 12px;
 	background: #fff;
-	border: 2px solid rgba(0, 0, 0, 0.2);
-	border-radius: 4px;
-	box-shadow: 0 1px 5px rgba(0, 0, 0, 0.2);
-	text-align: left;
+	margin: 0 0 1rem;
 }
 
-.wscosm-voronoi-btn:hover {
-	background: #f8fafc;
+.wscosm-house-panel.is-loading {
+	opacity: 0.7;
 }
 
-.wscosm-voronoi-btn:disabled,
-.wscosm-voronoi-btn.is-busy {
-	opacity: 0.65;
-	cursor: wait;
+.wscosm-house-head h4 {
+	margin: 0 0 8px;
+}
+
+.wscosm-house-empty {
+	color: var(--wsp-text-muted, #64748b);
+}
+
+.wscosm-house-list {
+	margin: 0;
+	padding-left: 1rem;
+	max-height: 280px;
+	overflow: auto;
+}
+
+.wscosm-house-list li {
+	margin-bottom: 0.45rem;
+}
+
+body.wscosm-modal-open {
+	overflow: hidden;
+}
+
+.wscosm-building-modal[hidden] {
+	display: none !important;
+}
+
+.wscosm-building-modal {
+	position: fixed;
+	inset: 0;
+	z-index: 10000;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+}
+
+.wscosm-building-modal__backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(15, 23, 42, 0.45);
+}
+
+.wscosm-building-modal__dialog {
+	position: relative;
+	width: min(680px, 100%);
+	max-height: min(80vh, 760px);
+	overflow: auto;
+	border-radius: 14px;
+	background: #fff;
+	box-shadow: 0 24px 80px rgba(15, 23, 42, 0.28);
+	padding: 20px 20px 16px;
+}
+
+.wscosm-building-modal__close {
+	position: absolute;
+	top: 10px;
+	right: 10px;
+	border: 0;
+	background: transparent;
+	font-size: 28px;
+	line-height: 1;
+	cursor: pointer;
+	color: #475569;
+}
+
+.wscosm-building-modal__body h4,
+.wscosm-building-modal__body h5 {
+	margin-top: 0;
+}
+
+.wscosm-building-modal__loading {
+	margin: 0.75rem 0 1rem;
+	padding: 0.75rem 0.9rem;
+	border-radius: 8px;
+	background: #eff6ff;
+	color: #1d4ed8;
+	font-weight: 600;
+}
+
+.wscosm-ct-generate-progress-wrap progress.wscosm-ct-buffer-progress {
+	display: block;
+	width: 100%;
+	max-width: 520px;
+	min-height: 14px;
+	height: 14px;
+	margin: 0;
+	vertical-align: middle;
+	border-radius: 6px;
+	overflow: hidden;
+	border: 1px solid rgba(0, 0, 0, 0.16);
+	accent-color: #2563eb;
+	appearance: none;
+	-webkit-appearance: none;
+}
+
+.wscosm-ct-generate-progress-wrap progress.wscosm-ct-buffer-progress::-webkit-progress-bar {
+	background-color: #e2e8f0;
+	border-radius: 6px;
+}
+
+.wscosm-ct-generate-progress-wrap progress.wscosm-ct-buffer-progress::-webkit-progress-value {
+	background-color: #2563eb;
+	border-radius: 6px;
+}
+
+.wscosm-ct-generate-progress-wrap progress.wscosm-ct-buffer-progress::-moz-progress-bar {
+	background-color: #2563eb;
+	border-radius: 6px;
+}
+
+.wscosm-ct-generate-progress-wrap--pulse progress.wscosm-ct-buffer-progress {
+	box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
 }

@@ -20,7 +20,7 @@ The plugin combines:
 * OpenStreetMap objects from Overpass API;
 * persistent OSM object storage in the WordPress database;
 * bbox-based loading for map viewports;
-* bounded Voronoi courtyard previews that can be saved into WorldStat Ergonomics;
+* simple courtyard buffer zone around selected building contour;
 * a protected live scan action for refreshing OSM data.
 
 On normal page loads the frontend reads OSM features from the local database by viewport bbox. Live Overpass requests are used only for explicit scans or permitted fallback paths, and successful scans are stored in the database for later page loads.
@@ -80,7 +80,7 @@ Main endpoints:
 * `GET /wp-json/wscosm/v1/city/{id}/features`
 * `GET /wp-json/wscosm/v1/scan-progress`
 * `GET /wp-json/wscosm/v1/city/{id}/yard-ergo-at`
-* `POST /wp-json/wscosm/v1/city/{id}/voronoi-yards`
+* `POST /wp-json/wscosm/v1/city/{id}/building-buffer-zone`
 
 The `features` endpoint accepts `south`, `west`, `north`, `east`, `source`, `refresh`, and `progress_id` parameters.
 
@@ -99,6 +99,7 @@ Useful options and filters:
 * `wscosm_can_live_overpass` - customize live scan permissions.
 * `wscosm_agent_debug_log` - enable internal NDJSON debug logging.
 * `wscosm_return_saved_features_after_scan` - return DB rows after scan instead of fresh Overpass payload.
+* `wscosm_courtyard_buffer_radius_m` - radius in meters for building buffer zone (default 35).
 
 == Installation ==
 

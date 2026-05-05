@@ -430,7 +430,7 @@ class WSCOSM_Feature_Store {
 	}
 
 	/**
-	 * All stored OSM objects for a city. Territory jobs use this instead of viewport bbox.
+	 * All stored OSM objects for a city (without viewport bbox clipping).
 	 *
 	 * @return array{type:string,features:array<int,mixed>}
 	 */
@@ -490,6 +490,52 @@ class WSCOSM_Feature_Store {
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$n = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE city_id = %d AND wscosm_kind LIKE %s AND wscosm_kind <> %s", $city_id, 'bldg\_%', 'bldg_part' ) );
 		return (int) $n;
+	}
+
+	/**
+	 * Полигональные здания города для генерации буферных придомовых (без загрузки прочего OSM).
+	 *
+	 * @return array{type:string,features:array<int,mixed>}
+	 */
+	public static function get_building_polygon_feature_collection_for_city( int $city_id, int $limit = 120000 ): array {
+		global $wpdb;
+		if ( $city_id <= 0 || $limit < 1 ) {
+			return [
+				'type'     => 'FeatureCollection',
+				'features' => [],
+			];
+		}
+		$limit = min( 120000, max( 1, $limit ) );
+		$table = $wpdb->prefix . 'wscosm_osm_object';
+		$sql   = $wpdb->prepare(
+			"SELECT object_key, osm_type, osm_id, wscosm_kind, geom_type, geometry_json, properties_json, bbox_s, bbox_w, bbox_n, bbox_e, fetched_gmt, ergo_status FROM {$table} WHERE city_id = %d AND wscosm_kind LIKE %s AND wscosm_kind <> %s AND geom_type IN ('Polygon','MultiPolygon') ORDER BY id ASC LIMIT %d",
+			$city_id,
+			'bldg\_%',
+			'bldg_part',
+			$limit
+		);
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$rows = $wpdb->get_results( $sql, ARRAY_A );
+		if ( ! is_array( $rows ) ) {
+			$rows = [];
+		}
+		$features = [];
+		foreach ( $rows as $row ) {
+			$geom  = json_decode( (string) ( $row['geometry_json'] ?? '' ), true );
+			$props = json_decode( (string) ( $row['properties_json'] ?? '' ), true );
+			if ( ! is_array( $geom ) || ! is_array( $props ) ) {
+				continue;
+			}
+			$features[] = [
+				'type'       => 'Feature',
+				'geometry'   => $geom,
+				'properties' => $props,
+			];
+		}
+		return [
+			'type'     => 'FeatureCollection',
+			'features' => $features,
+		];
 	}
 
 	/**

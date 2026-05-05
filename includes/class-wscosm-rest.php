@@ -25,15 +25,6 @@ class WSCOSM_REST {
 		return $city_id > 0 && self::can_live_overpass( $city_id );
 	}
 
-	public static function can_activate_territory_job_request( WP_REST_Request $request ): bool {
-		$job_id = sanitize_key( (string) $request->get_param( 'job_id' ) );
-		if ( $job_id === '' || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
-			return false;
-		}
-		$city_id = WSCOSM_Territory_Job::get_city_id_for_job( $job_id );
-		return $city_id > 0 && self::can_live_overpass( $city_id );
-	}
-
 	public static function register(): void {
 		register_rest_route(
 			self::NS,
@@ -128,10 +119,10 @@ class WSCOSM_REST {
 
 		register_rest_route(
 			self::NS,
-			'/city/(?P<id>\d+)/voronoi-yards',
+			'/city/(?P<id>\d+)/recalculate-yards-ergo',
 			[
 				'methods'             => 'POST',
-				'callback'            => [ self::class, 'save_voronoi_yards' ],
+				'callback'            => [ self::class, 'post_recalculate_yards_ergo' ],
 				'permission_callback' => [ self::class, 'can_edit_city_request' ],
 				'args'                => [
 					'id' => [
@@ -145,10 +136,10 @@ class WSCOSM_REST {
 
 		register_rest_route(
 			self::NS,
-			'/city/(?P<id>\d+)/territory-jobs',
+			'/city/(?P<id>\d+)/building-buffer-zone',
 			[
 				'methods'             => 'POST',
-				'callback'            => [ self::class, 'start_territory_job' ],
+				'callback'            => [ self::class, 'post_building_buffer_zone' ],
 				'permission_callback' => [ self::class, 'can_edit_city_request' ],
 				'args'                => [
 					'id' => [
@@ -162,33 +153,21 @@ class WSCOSM_REST {
 
 		register_rest_route(
 			self::NS,
-			'/territory-jobs/(?P<job_id>[a-zA-Z0-9]+)/status',
-			[
-				'methods'             => 'GET',
-				'callback'            => [ self::class, 'get_territory_job_status' ],
-				'permission_callback' => '__return_true',
-			]
-		);
-
-		register_rest_route(
-			self::NS,
-			'/territory-jobs/(?P<job_id>[a-zA-Z0-9]+)/result',
-			[
-				'methods'             => 'GET',
-				'callback'            => [ self::class, 'get_territory_job_result' ],
-				'permission_callback' => '__return_true',
-			]
-		);
-
-		register_rest_route(
-			self::NS,
-			'/territory-jobs/(?P<job_id>[a-zA-Z0-9]+)/activate',
+			'/city/(?P<id>\d+)/generate-buffer-yards',
 			[
 				'methods'             => 'POST',
-				'callback'            => [ self::class, 'activate_territory_job' ],
-				'permission_callback' => [ self::class, 'can_activate_territory_job_request' ],
+				'callback'            => [ self::class, 'post_generate_buffer_yards' ],
+				'permission_callback' => [ self::class, 'can_edit_city_request' ],
+				'args'                => [
+					'id' => [
+						'type'              => 'integer',
+						'required'          => true,
+						'sanitize_callback' => 'absint',
+					],
+				],
 			]
 		);
+
 	}
 
 	/**
@@ -454,96 +433,6 @@ class WSCOSM_REST {
 		return new WP_REST_Response( $p, 200 );
 	}
 
-	public static function start_territory_job( WP_REST_Request $request ) {
-		$city_id = (int) $request->get_param( 'id' );
-		if ( $city_id <= 0 || ! class_exists( 'WSCities_CPT' ) || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
-			return new WP_Error( 'wscosm_bad_city', 'Invalid city id.', [ 'status' => 400 ] );
-		}
-		$post = get_post( $city_id );
-		if ( ! $post || $post->post_type !== WSCities_CPT::SLUG || $post->post_status !== 'publish' ) {
-			return new WP_Error( 'wscosm_not_found', 'City not found.', [ 'status' => 404 ] );
-		}
-		$lat = (float) get_post_meta( $city_id, 'wscity_lat', true );
-		$lng = (float) get_post_meta( $city_id, 'wscity_lng', true );
-		if ( ! $lat || ! $lng ) {
-			return new WP_Error( 'wscosm_no_coords', 'City coordinates are missing.', [ 'status' => 400 ] );
-		}
-		$params = $request->get_json_params();
-		$params = is_array( $params ) ? $params : [];
-		$config = isset( $params['config'] ) && is_array( $params['config'] ) ? $params['config'] : [];
-		$dupe_key = 'wscosm_territory_recent_' . md5( ( defined( 'WSCOSM_VERSION' ) ? WSCOSM_VERSION : 'dev' ) . ':' . $city_id . ':' . get_current_user_id() . ':python_worker:' . wp_json_encode( $config ) );
-		$recent = get_transient( $dupe_key );
-		if ( is_array( $recent ) && ! empty( $recent['job_id'] ) ) {
-			return new WP_REST_Response( $recent, 202 );
-		}
-		$status = WSCOSM_Territory_Job::enqueue_city( $city_id, $config );
-		$job_id = (string) ( $status['job_id'] ?? '' );
-		$status['status_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/status' );
-		$status['result_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/result' );
-		$status['activate_url'] = rest_url( self::NS . '/territory-jobs/' . $job_id . '/activate' );
-		$status['mode'] = 'python_worker';
-		set_transient( $dupe_key, $status, 30 );
-		return new WP_REST_Response( $status, 202 );
-	}
-
-	public static function get_territory_job_status( WP_REST_Request $request ) {
-		$job_id = sanitize_key( (string) $request->get_param( 'job_id' ) );
-		if ( $job_id === '' || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
-			return new WP_Error( 'wscosm_bad_job', 'Invalid job id.', [ 'status' => 400 ] );
-		}
-		WSCOSM_Territory_Job::maybe_run_queued( $job_id );
-		return new WP_REST_Response( WSCOSM_Territory_Job::get_status( $job_id ), 200 );
-	}
-
-	public static function get_territory_job_result( WP_REST_Request $request ) {
-		$job_id = sanitize_key( (string) $request->get_param( 'job_id' ) );
-		if ( $job_id === '' || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
-			return new WP_Error( 'wscosm_bad_job', 'Invalid job id.', [ 'status' => 400 ] );
-		}
-		return new WP_REST_Response( WSCOSM_Territory_Job::get_result( $job_id ), 200 );
-	}
-
-	/**
-	 * Atomically replace wscosm-generated yards with the finished territory job GeoJSON result.
-	 *
-	 * @param WP_REST_Request $request Request.
-	 */
-	public static function activate_territory_job( WP_REST_Request $request ) {
-		$job_id = sanitize_key( (string) $request->get_param( 'job_id' ) );
-		if ( $job_id === '' || ! class_exists( 'WSCOSM_Territory_Job' ) ) {
-			return new WP_Error( 'wscosm_bad_job', 'Invalid job id.', [ 'status' => 400 ] );
-		}
-
-		WSCOSM_Territory_Job::maybe_run_queued( $job_id );
-		$job_status = WSCOSM_Territory_Job::get_status( $job_id );
-		if ( (string) ( $job_status['status'] ?? '' ) !== 'done' ) {
-			return new WP_Error(
-				'wscosm_job_not_ready',
-				'Territory job is not finished yet.',
-				[ 'status' => 409 ]
-			);
-		}
-
-		$city_id = WSCOSM_Territory_Job::get_city_id_for_job( $job_id );
-		$city_err = self::assert_city_publishable_for_yards( $city_id );
-		if ( $city_err instanceof WP_Error ) {
-			return $city_err;
-		}
-
-		$result   = WSCOSM_Territory_Job::get_result( $job_id );
-		$features = isset( $result['features'] ) && is_array( $result['features'] ) ? $result['features'] : [];
-		if ( empty( $features ) ) {
-			return new WP_Error(
-				'wscosm_empty_territory_result',
-				'Job result has no territory features.',
-				[ 'status' => 400 ]
-			);
-		}
-
-		$stats = self::ingest_generated_yard_features( $city_id, $features, true );
-		return new WP_REST_Response( $stats, 200 );
-	}
-
 	/**
 	 * HTML эргономики для точки (придомовый полигон).
 	 *
@@ -603,27 +492,787 @@ class WSCOSM_REST {
 	}
 
 	/**
-	 * Save generated raster allocation territories as WorldStat Ergonomics yards.
+	 * Build a simple courtyard zone for one building as "buffer from contour".
 	 *
 	 * @param WP_REST_Request $request Request.
 	 */
-	public static function save_voronoi_yards( WP_REST_Request $request ) {
+	public static function post_building_buffer_zone( WP_REST_Request $request ) {
+		$city_id = (int) $request->get_param( 'id' );
+		if ( $city_id <= 0 || ! class_exists( 'WSCities_CPT' ) ) {
+			return new WP_Error( 'wscosm_bad_city', 'Invalid city id.', [ 'status' => 400 ] );
+		}
+		$post = get_post( $city_id );
+		if ( ! $post || $post->post_type !== WSCities_CPT::SLUG || $post->post_status !== 'publish' ) {
+			return new WP_Error( 'wscosm_not_found', 'City not found.', [ 'status' => 404 ] );
+		}
+
+		$params = $request->get_json_params();
+		$params = is_array( $params ) ? $params : [];
+
+		$req_object_key = sanitize_text_field( (string) ( $params['object_key'] ?? '' ) );
+		$req_osm_type   = sanitize_key( (string) ( $params['osm_type'] ?? '' ) );
+		$req_osm_id     = absint( $params['osm_id'] ?? 0 );
+
+		if ( $req_object_key === '' && ( $req_osm_type === '' || $req_osm_id <= 0 ) ) {
+			return new WP_Error( 'wscosm_bad_building_ref', 'object_key or osm_type/osm_id is required.', [ 'status' => 400 ] );
+		}
+
+		global $wpdb;
+		$table = $wpdb->prefix . 'wscosm_osm_object';
+
+		if ( $req_object_key !== '' ) {
+			$row = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT object_key, osm_type, osm_id, wscosm_kind, geometry_json, properties_json
+					FROM {$table}
+					WHERE city_id = %d AND object_key = %s
+					ORDER BY id DESC
+					LIMIT 1",
+					$city_id,
+					$req_object_key
+				),
+				ARRAY_A
+			);
+		} else {
+			$row = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT object_key, osm_type, osm_id, wscosm_kind, geometry_json, properties_json
+					FROM {$table}
+					WHERE city_id = %d AND osm_type = %s AND osm_id = %d
+					ORDER BY id DESC
+					LIMIT 1",
+					$city_id,
+					$req_osm_type,
+					$req_osm_id
+				),
+				ARRAY_A
+			);
+		}
+
+		if ( ! is_array( $row ) ) {
+			return new WP_Error( 'wscosm_building_not_found', 'Building not found in local OSM storage.', [ 'status' => 404 ] );
+		}
+
+		$kind = sanitize_key( (string) ( $row['wscosm_kind'] ?? '' ) );
+		if ( strpos( $kind, 'bldg_' ) !== 0 || $kind === 'bldg_part' ) {
+			return new WP_Error( 'wscosm_not_a_building', 'Selected object is not a supported building.', [ 'status' => 400 ] );
+		}
+
+		$building_geom = json_decode( (string) ( $row['geometry_json'] ?? '' ), true );
+		$building_props = json_decode( (string) ( $row['properties_json'] ?? '' ), true );
+		if ( ! is_array( $building_geom ) || ! is_array( $building_props ) ) {
+			return new WP_Error( 'wscosm_bad_building_geometry', 'Building geometry is invalid.', [ 'status' => 500 ] );
+		}
+		$gtype = (string) ( $building_geom['type'] ?? '' );
+		if ( $gtype !== 'Polygon' && $gtype !== 'MultiPolygon' ) {
+			return new WP_Error( 'wscosm_bad_building_geometry_type', 'Building geometry must be Polygon or MultiPolygon.', [ 'status' => 400 ] );
+		}
+
+		$radius_m = self::courtyard_buffer_radius_m();
+		$building_key = sanitize_text_field( (string) ( $row['object_key'] ?? '' ) );
+
+		$fc_one = [
+			'type'     => 'FeatureCollection',
+			'features' => [
+				[
+					'type'       => 'Feature',
+					'geometry'   => $building_geom,
+					'properties' => [
+						'object_key'         => $building_key,
+						'wscosm_osm_el_type' => sanitize_key( (string) ( $row['osm_type'] ?? '' ) ),
+						'wscosm_osm_id'      => absint( $row['osm_id'] ?? 0 ),
+						'wscosm_kind'        => $kind,
+						'name'               => sanitize_text_field( (string) ( $building_props['name'] ?? '' ) ),
+					],
+				],
+			],
+		];
+
+		$py_feats = self::try_run_python_buffer_fc( $fc_one, $radius_m, null );
+		if ( ! is_array( $py_feats ) || empty( $py_feats[0] ) || ! is_array( $py_feats[0] ) ) {
+			return new WP_Error( 'wscosm_buffer_failed', 'Python buffer failed.', [ 'status' => 500 ] );
+		}
+
+		$zone_geom = isset( $py_feats[0]['geometry'] ) && is_array( $py_feats[0]['geometry'] ) ? $py_feats[0]['geometry'] : null;
+		if ( ! self::is_valid_polygon_geometry( $zone_geom ) ) {
+			return new WP_Error( 'wscosm_buffer_failed', 'Python buffer returned invalid geometry.', [ 'status' => 500 ] );
+		}
+
+		$zone_bbox = class_exists( 'WSCOSM_Feature_Store' ) ? WSCOSM_Feature_Store::geometry_envelope( $zone_geom ) : null;
+		$candidate_fc = ( $zone_bbox && class_exists( 'WSCOSM_Feature_Store' ) )
+			? WSCOSM_Feature_Store::get_feature_collection_for_bbox( $city_id, $zone_bbox, 12000 )
+			: [ 'type' => 'FeatureCollection', 'features' => [] ];
+
+		$objects = [];
+		foreach ( (array) ( $candidate_fc['features'] ?? [] ) as $feat ) {
+			if ( ! is_array( $feat ) ) {
+				continue;
+			}
+			$props = isset( $feat['properties'] ) && is_array( $feat['properties'] ) ? $feat['properties'] : [];
+			$geom  = isset( $feat['geometry'] ) && is_array( $feat['geometry'] ) ? $feat['geometry'] : null;
+			if ( ! $geom ) {
+				continue;
+			}
+
+			$f_kind = sanitize_key( (string) ( $props['wscosm_kind'] ?? '' ) );
+			if ( strpos( $f_kind, 'bldg_' ) === 0 ) {
+				continue;
+			}
+
+			$f_object_key = sanitize_text_field( (string) ( $props['object_key'] ?? '' ) );
+			if ( $f_object_key === '' ) {
+				$f_osm_type = sanitize_key( (string) ( $props['wscosm_osm_el_type'] ?? '' ) );
+				$f_osm_id   = absint( $props['wscosm_osm_id'] ?? 0 );
+				if ( $f_osm_type !== '' && $f_osm_id > 0 ) {
+					$f_object_key = $f_osm_type . ':' . $f_osm_id;
+				}
+			}
+			if ( $f_object_key !== '' && $f_object_key === $building_key ) {
+				continue;
+			}
+
+			if ( ! self::geometry_intersects_zone_simple( $geom, $zone_geom ) ) {
+				continue;
+			}
+			$objects[] = $feat;
+			if ( count( $objects ) >= 1500 ) {
+				break;
+			}
+		}
+
+		$building_center = class_exists( 'WSCOSM_Geo' )
+			? WSCOSM_Geo::geometry_representative_latlng( $building_geom )
+			: null;
+
+		return new WP_REST_Response(
+			[
+				'building' => [
+					'object_key' => $building_key,
+					'osm_type'   => sanitize_key( (string) ( $row['osm_type'] ?? '' ) ),
+					'osm_id'     => absint( $row['osm_id'] ?? 0 ),
+					'kind'       => $kind,
+					'name'       => sanitize_text_field( (string) ( $building_props['name'] ?? '' ) ),
+					'center'     => is_array( $building_center ) ? [ 'lat' => (float) $building_center[0], 'lng' => (float) $building_center[1] ] : null,
+				],
+				'radius_m' => $radius_m,
+				'zone'     => [
+					'type'       => 'Feature',
+					'geometry'   => $zone_geom,
+					'properties' => [
+						'method'     => 'building_contour_buffer',
+						'radius_m'   => $radius_m,
+						'object_key' => $building_key,
+					],
+				],
+				'objects'  => [
+					'type'     => 'FeatureCollection',
+					'features' => $objects,
+				],
+			],
+			200
+		);
+	}
+
+	private static function courtyard_buffer_radius_m(): float {
+		$v = (float) get_option( 'wscosm_courtyard_buffer_radius_m', 35 );
+		return max( 5.0, min( 200.0, $v ) );
+	}
+
+	/**
+	 * @param array<string,mixed> $data
+	 */
+	private static function scan_progress_set_long( string $progress_id, array $data ): void {
+		if ( strlen( $progress_id ) !== 32 || ! class_exists( 'WSCOSM_Scan_Progress' ) ) {
+			return;
+		}
+		WSCOSM_Scan_Progress::set( $progress_id, $data, WSCOSM_Scan_Progress::TTL_LONG );
+	}
+
+	/**
+	 * @see tools/buffer_building_yards.py — stderr lines "WSCOSM_PROGRESS current total phase".
+	 */
+	private static function buffer_yards_flush_progress_stderr( string &$stderr_acc, ?string $progress_id ): void {
+		if ( ! $progress_id || strlen( $progress_id ) !== 32 ) {
+			return;
+		}
+		while ( ( $p = strpos( $stderr_acc, "\n" ) ) !== false ) {
+			$line       = substr( $stderr_acc, 0, $p );
+			$stderr_acc = substr( $stderr_acc, $p + 1 );
+			if ( strncmp( $line, 'WSCOSM_PROGRESS ', 16 ) !== 0 ) {
+				continue;
+			}
+			$rest = trim( substr( $line, 16 ) );
+			if ( $rest === '' ) {
+				continue;
+			}
+			$parts = preg_split( '/\s+/', $rest, 3 );
+			if ( count( $parts ) < 3 ) {
+				continue;
+			}
+			self::scan_progress_set_long(
+				$progress_id,
+				[
+					'phase'   => 'buffer',
+					'total'   => absint( $parts[1] ),
+					'current' => absint( $parts[0] ),
+					'saved'   => 0,
+					'message' => '',
+				]
+			);
+		}
+	}
+
+	/**
+	 * Run tools/buffer_building_yards.py; GeoJSON stdout or null → PHP fallback.
+	 *
+	 * @param array<string,mixed> $source_fc
+	 * @return array<int,array<string,mixed>>|null
+	 */
+	private static function try_run_python_buffer_fc( array $source_fc, float $radius_m, ?string $progress_id ): ?array {
+		if ( ! defined( 'WSCOSM_DIR' ) ) {
+			return null;
+		}
+
+		$script = wp_normalize_path( WSCOSM_DIR . 'tools/buffer_building_yards.py' );
+		if ( ! is_readable( $script ) ) {
+			return null;
+		}
+
+		$r_m = max( 5.0, min( 200.0, $radius_m ) );
+		$fc_in = [
+			'type'     => 'FeatureCollection',
+			'features' => isset( $source_fc['features'] ) && is_array( $source_fc['features'] ) ? $source_fc['features'] : [],
+		];
+
+		$stdin_json = wp_json_encode( $fc_in, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE );
+		if ( ! is_string( $stdin_json ) || $stdin_json === '' ) {
+			return null;
+		}
+
+		$args_tail  = [ $script, '--radius-m', (string) $r_m ];
+		$candidates = [];
+		$py_env     = getenv( 'WSCOSM_PYTHON' );
+		if ( is_string( $py_env ) && $py_env !== '' ) {
+			$candidates[] = array_merge( [ $py_env, '-u' ], $args_tail );
+		}
+		if ( PHP_OS_FAMILY === 'Windows' ) {
+			array_unshift( $candidates, array_merge( [ 'py', '-3', '-u' ], $args_tail ) );
+		}
+		$candidates[] = array_merge( [ 'python3', '-u' ], $args_tail );
+		$candidates[] = array_merge( [ 'python', '-u' ], $args_tail );
+
+		foreach ( $candidates as $argv ) {
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.proc_open_proc_open
+			$proc = proc_open(
+				$argv,
+				[
+					0 => [ 'pipe', 'r' ],
+					1 => [ 'pipe', 'w' ],
+					2 => [ 'pipe', 'w' ],
+				],
+				$pipes,
+				null,
+				null,
+				[ 'bypass_shell' => true ]
+			);
+
+			if ( ! is_resource( $proc ) ) {
+				continue;
+			}
+
+			fwrite( $pipes[0], $stdin_json );
+			fclose( $pipes[0] );
+			unset( $pipes[0] );
+
+			if ( ! isset( $pipes[1], $pipes[2] ) || ! is_resource( $pipes[1] ) || ! is_resource( $pipes[2] ) ) {
+				proc_close( $proc );
+
+				continue;
+			}
+
+			$p_stdout = $pipes[1];
+			$p_stderr = $pipes[2];
+			stream_set_blocking( $p_stdout, false );
+			stream_set_blocking( $p_stderr, false );
+			// Encourage immediate pipe delivery (Windows).
+			if ( function_exists( 'stream_set_read_buffer' ) ) {
+				stream_set_read_buffer( $p_stdout, 0 );
+				stream_set_read_buffer( $p_stderr, 0 );
+			}
+
+			$stdout     = '';
+			$stderr_acc = '';
+			$deadline   = microtime( true ) + 590.0;
+
+			// On Windows, stream_select() is unreliable for proc pipes.
+			// Use polling reads to stream progress updates from stderr.
+			do {
+				if ( microtime( true ) > $deadline ) {
+					proc_terminate( $proc, 15 );
+					break;
+				}
+
+				$running = proc_get_status( $proc )['running'];
+
+				$had_any = false;
+
+				if ( is_resource( $p_stderr ) ) {
+					$chunk = stream_get_contents( $p_stderr );
+					if ( is_string( $chunk ) && '' !== $chunk ) {
+						$stderr_acc .= $chunk;
+						self::buffer_yards_flush_progress_stderr( $stderr_acc, $progress_id );
+						$had_any = true;
+					}
+				}
+
+				if ( is_resource( $p_stdout ) ) {
+					$chunk = stream_get_contents( $p_stdout );
+					if ( is_string( $chunk ) && '' !== $chunk ) {
+						$stdout .= $chunk;
+						$had_any = true;
+					}
+				}
+
+				if ( ! $running && ! $had_any ) {
+					break;
+				}
+
+				if ( ! $had_any ) {
+					usleep( 12000 );
+				}
+
+			} while ( true );
+
+			if ( is_resource( $p_stderr ) ) {
+				stream_set_blocking( $p_stderr, true );
+				while ( ! feof( $p_stderr ) ) {
+					$d = fread( $p_stderr, 65536 );
+					if ( false === $d || '' === $d ) {
+						break;
+					}
+					$stderr_acc .= (string) $d;
+				}
+			}
+
+			self::buffer_yards_flush_progress_stderr( $stderr_acc, $progress_id );
+
+			if ( is_resource( $p_stdout ) ) {
+				stream_set_blocking( $p_stdout, true );
+				while ( ! feof( $p_stdout ) ) {
+					$d = fread( $p_stdout, 65536 );
+					if ( false === $d || '' === $d ) {
+						break;
+					}
+					$stdout .= (string) $d;
+				}
+			}
+
+			if ( is_resource( $p_stdout ) ) {
+				fclose( $p_stdout );
+			}
+
+			if ( is_resource( $p_stderr ) ) {
+				fclose( $p_stderr );
+			}
+
+			$exit_code = proc_close( $proc );
+
+			if ( 0 !== (int) $exit_code ) {
+				continue;
+			}
+
+			if ( '' === trim( $stdout ) ) {
+				continue;
+			}
+
+			$decoded = json_decode( $stdout, true );
+			if ( ! is_array( $decoded ) ) {
+				continue;
+			}
+			if ( (string) ( $decoded['type'] ?? '' ) !== 'FeatureCollection' ) {
+				continue;
+			}
+			$feats = isset( $decoded['features'] ) && is_array( $decoded['features'] ) ? $decoded['features'] : [];
+			if ( [] === $feats ) {
+				continue;
+			}
+
+			return $feats;
+		}
+
+		return null;
+	}
+
+	// (PHP buffer geometry removed — Python is required.)
+
+	/**
+	 * Fast conservative intersection check without heavy GIS libs.
+	 *
+	 * @param array<string,mixed> $geometry
+	 * @param array<string,mixed> $zone
+	 */
+	private static function geometry_intersects_zone_simple( array $geometry, array $zone ): bool {
+		$rep = class_exists( 'WSCOSM_Geo' ) ? WSCOSM_Geo::geometry_representative_latlng( $geometry ) : null;
+		if ( is_array( $rep ) && class_exists( 'WSCOSM_Geo' ) ) {
+			if ( WSCOSM_Geo::point_in_geometry( (float) $rep[0], (float) $rep[1], $zone ) ) {
+				return true;
+			}
+			$rep_dist = WSCOSM_Geo::min_distance_point_to_geometry_m( (float) $rep[0], (float) $rep[1], $zone );
+			if ( $rep_dist <= 15.0 ) {
+				return true;
+			}
+		}
+		return self::geometry_has_vertex_in_zone( $geometry, $zone );
+	}
+
+	/**
+	 * @param array<string,mixed> $geometry
+	 * @param array<string,mixed> $zone
+	 */
+	private static function geometry_has_vertex_in_zone( array $geometry, array $zone ): bool {
+		$coords = $geometry['coordinates'] ?? null;
+		if ( ! is_array( $coords ) || ! class_exists( 'WSCOSM_Geo' ) ) {
+			return false;
+		}
+		$stack = [ $coords ];
+		while ( ! empty( $stack ) ) {
+			$node = array_pop( $stack );
+			if ( ! is_array( $node ) ) {
+				continue;
+			}
+			if ( isset( $node[0], $node[1] ) && is_numeric( $node[0] ) && is_numeric( $node[1] ) && ! is_array( $node[0] ) ) {
+				if ( WSCOSM_Geo::point_in_geometry( (float) $node[1], (float) $node[0], $zone ) ) {
+					return true;
+				}
+				continue;
+			}
+			foreach ( $node as $child ) {
+				if ( is_array( $child ) ) {
+					$stack[] = $child;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Generate and save buffer courtyard polygons for all eligible buildings of the city.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public static function post_generate_buffer_yards( WP_REST_Request $request ) {
 		$city_id = (int) $request->get_param( 'id' );
 		$city_err = self::assert_city_publishable_for_yards( $city_id );
 		if ( $city_err instanceof WP_Error ) {
 			return $city_err;
 		}
 
-		$params           = $request->get_json_params();
-		$features         = isset( $params['features'] ) && is_array( $params['features'] ) ? $params['features'] : [];
-		$replace_existing = isset( $params['replace_existing'] ) && (bool) $params['replace_existing'];
-		if ( empty( $features ) ) {
-			return new WP_Error( 'wscosm_empty_generated_yards', 'No generated yard features provided.', [ 'status' => 400 ] );
+		if ( function_exists( 'set_time_limit' ) ) {
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			@set_time_limit( 600 );
 		}
 
-		$features = array_slice( $features, 0, 500 );
-		$stats    = self::ingest_generated_yard_features( $city_id, $features, $replace_existing );
+		$params           = $request->get_json_params();
+		$params           = is_array( $params ) ? $params : [];
+		$replace_existing = ! isset( $params['replace_existing'] ) || (bool) $params['replace_existing'];
+		$radius_m         = self::courtyard_buffer_radius_m();
+		$progress_id      = class_exists( 'WSCOSM_Scan_Progress' )
+			? WSCOSM_Scan_Progress::sanitize_id( (string) ( $params['progress_id'] ?? '' ) )
+			: '';
+
+		if ( '' !== $progress_id ) {
+			self::scan_progress_set_long(
+				$progress_id,
+				[
+					'phase'   => 'prepare',
+					'total'   => 0,
+					'current' => 0,
+					'saved'   => 0,
+					'message' => '',
+				]
+			);
+		}
+
+		$source_fc = class_exists( 'WSCOSM_Feature_Store' )
+			? WSCOSM_Feature_Store::get_building_polygon_feature_collection_for_city( $city_id, 120000 )
+			: [ 'type' => 'FeatureCollection', 'features' => [] ];
+
+		$raw_features = isset( $source_fc['features'] ) && is_array( $source_fc['features'] ) ? $source_fc['features'] : [];
+		$n_in         = count( $raw_features );
+
+		if ( '' !== $progress_id ) {
+			self::scan_progress_set_long(
+				$progress_id,
+				[
+					'phase'   => 'buffer',
+					'total'   => $n_in,
+					'current' => 0,
+					'saved'   => 0,
+					'message' => '',
+				]
+			);
+		}
+
+		$py_out = self::try_run_python_buffer_fc( $source_fc, $radius_m, $progress_id );
+		if ( ! is_array( $py_out ) || [] === $py_out ) {
+			if ( '' !== $progress_id ) {
+				self::scan_progress_set_long(
+					$progress_id,
+					[
+						'phase'   => 'error',
+						'total'   => $n_in,
+						'current' => 0,
+						'saved'   => 0,
+						'message' => 'python_buffer_failed',
+					]
+				);
+			}
+			return new WP_Error(
+				'wscosm_python_buffer_failed',
+				'Python buffer is required but failed to run.',
+				[ 'status' => 500 ]
+			);
+		}
+		$features = $py_out;
+
+		if ( empty( $features ) ) {
+			if ( '' !== $progress_id ) {
+				self::scan_progress_set_long(
+					$progress_id,
+					[
+						'phase'   => 'error',
+						'total'   => $n_in,
+						'current' => 0,
+						'saved'   => 0,
+						'message' => 'no_building_buffers',
+					]
+				);
+			}
+			return new WP_Error(
+				'wscosm_no_building_buffers',
+				'No supported OSM building polygons were found for buffer generation.',
+				[ 'status' => 409 ]
+			);
+		}
+
+		$n_gen = count( $features );
+		if ( '' !== $progress_id ) {
+			self::scan_progress_set_long(
+				$progress_id,
+				[
+					'phase'   => 'saving',
+					'total'   => $n_gen,
+					'current' => 0,
+					'saved'   => 0,
+					'message' => '',
+				]
+			);
+		}
+
+		$stats = self::ingest_generated_yard_features( $city_id, $features, $replace_existing, $progress_id );
+		$stats['source_buildings']   = $n_gen;
+		$stats['generated_features'] = $n_gen;
+		$stats['radius_m']           = $radius_m;
+
+		if ( '' !== $progress_id ) {
+			self::scan_progress_set_long(
+				$progress_id,
+				[
+					'phase'   => 'done',
+					'total'   => $n_gen,
+					'current' => $n_gen,
+					'saved'   => isset( $stats['saved'] ) ? (int) $stats['saved'] : 0,
+					'message' => '',
+				]
+			);
+		}
+
 		return new WP_REST_Response( $stats, 200 );
+	}
+
+	// (PHP bulk buffer generator removed — Python is required.)
+
+	/**
+	 * Пересчитать индекс эргономики для всех придомовых участков города и сбросить кеш GeoJSON полигонов.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public static function post_recalculate_yards_ergo( WP_REST_Request $request ) {
+		$city_id = (int) $request->get_param( 'id' );
+		if ( $city_id <= 0 || ! class_exists( 'WSCities_CPT' ) ) {
+			return new WP_Error( 'wscosm_bad_city', 'Invalid city id.', [ 'status' => 400 ] );
+		}
+
+		$post = get_post( $city_id );
+		if ( ! $post || $post->post_type !== WSCities_CPT::SLUG || $post->post_status !== 'publish' ) {
+			return new WP_Error( 'wscosm_not_found', 'City not found.', [ 'status' => 404 ] );
+		}
+
+		if ( ! class_exists( 'WSErgo_CPT' ) || ! class_exists( 'WSErgo_Calculator' ) ) {
+			return new WP_Error(
+				'wscosm_ergo_missing',
+				'WorldStat Ergonomics is required.',
+				[ 'status' => 409 ]
+			);
+		}
+
+		if ( function_exists( 'set_time_limit' ) ) {
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			@set_time_limit( 600 );
+		}
+
+		$t_batch = microtime( true );
+
+		$city_key   = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_CITY_ID : 'wsosm_city_id';
+		$entity_key = class_exists( 'WSOSM_Writer' ) ? WSOSM_Writer::META_ENTITY_TYPE : 'wsosm_entity_type';
+
+		$q = new WP_Query(
+			[
+				'post_type'              => WSErgo_CPT::SLUG_YARD,
+				'post_status'            => 'publish',
+				'posts_per_page'         => -1,
+				'fields'                 => 'ids',
+				'orderby'                => 'ID',
+				'order'                  => 'ASC',
+				'no_found_rows'          => true,
+				'update_post_meta_cache' => false,
+				'update_term_meta_cache' => false,
+				'meta_query'             => [
+					'relation' => 'AND',
+					[
+						'key'   => $city_key,
+						'value' => $city_id,
+					],
+					[
+						'key'   => $entity_key,
+						'value' => 'building',
+					],
+				],
+			]
+		);
+
+		$ids   = array_map( 'intval', (array) $q->posts );
+		$total = count( $ids );
+
+		if ( class_exists( 'WSCOSM_Log' ) ) {
+			WSCOSM_Log::ergo_recalc(
+				'start',
+				[
+					'total_yards' => $total,
+					'city_title'  => get_the_title( $city_id ),
+				],
+				$city_id
+			);
+		}
+
+		$processed               = 0;
+		$with_nonzero_dimensions = 0;
+		$osm_raw_writes          = 0;
+
+		$kind_index         = [];
+		$osm_feature_count  = 0;
+		$t_osm              = microtime( true );
+		if ( class_exists( 'WSCOSM_Feature_Store' ) && class_exists( 'WSCOSM_Yard_Osm_Raw' ) ) {
+			$fc                = WSCOSM_Feature_Store::get_feature_collection_for_city( $city_id, 100000 );
+			$osm_feature_count = isset( $fc['features'] ) && is_array( $fc['features'] ) ? count( $fc['features'] ) : 0;
+			$kind_index        = WSCOSM_Yard_Osm_Raw::build_kind_index( isset( $fc['features'] ) && is_array( $fc['features'] ) ? $fc['features'] : [] );
+		}
+		$osm_load_sec = round( microtime( true ) - $t_osm, 3 );
+		if ( class_exists( 'WSCOSM_Log' ) ) {
+			WSCOSM_Log::ergo_recalc(
+				'osm_index_ready',
+				[
+					'osm_features'       => $osm_feature_count,
+					'osm_kinds_indexed'   => count( $kind_index ),
+					'duration_prepare_sec' => $osm_load_sec,
+				],
+				$city_id
+			);
+		}
+
+		$tick_every = max( 1, (int) apply_filters( 'wscosm_ergo_recalc_log_every', 25 ) );
+		$t_loop     = microtime( true );
+
+		foreach ( $ids as $pid ) {
+			if ( $pid <= 0 ) {
+				continue;
+			}
+			if ( ! empty( $kind_index ) && class_exists( 'WSCOSM_Yard_Osm_Raw' ) ) {
+				$osm_raw_writes += WSCOSM_Yard_Osm_Raw::sync_yard_raw_from_osm( $pid, $kind_index );
+			}
+			if ( class_exists( 'WSErgo_Indicators' ) ) {
+				WSErgo_Indicators::sync_dimension_meta_from_indicators( $pid );
+			}
+			WSErgo_Calculator::compute_and_store_index( $pid );
+			if ( class_exists( 'WSErgo_Model' ) ) {
+				$scores = WSErgo_Model::get_scores_from_post( $pid );
+				foreach ( WSErgo_Model::DIMENSION_KEYS as $dim ) {
+					if ( isset( $scores[ $dim ] ) && (float) $scores[ $dim ] > 0 ) {
+						++$with_nonzero_dimensions;
+						break;
+					}
+				}
+			}
+			++$processed;
+
+			if ( class_exists( 'WSCOSM_Log' ) && $total > 0 && ( $processed === 1 || $processed % $tick_every === 0 || $processed === $total ) ) {
+				$elapsed_loop = microtime( true ) - $t_loop;
+				$avg          = $processed > 0 ? $elapsed_loop / $processed : 0.0;
+				$remaining    = $total - $processed;
+				$eta_sec      = ( $avg > 0 && $remaining > 0 ) ? round( $avg * $remaining, 1 ) : 0.0;
+				WSCOSM_Log::ergo_recalc(
+					'progress',
+					[
+						'processed'            => $processed,
+						'total'                => $total,
+						'pct'                  => round( 100 * $processed / $total, 1 ),
+						'elapsed_batch_sec'    => round( $elapsed_loop, 2 ),
+						'avg_sec_per_yard'     => $processed > 0 ? round( $elapsed_loop / $processed, 4 ) : null,
+						'eta_remaining_sec'    => $eta_sec,
+						'eta_remaining_human'  => WSCOSM_Log::format_duration_ru( $eta_sec ),
+					],
+					$city_id
+				);
+			}
+		}
+
+		if ( class_exists( 'WSErgo_Data' ) ) {
+			WSErgo_Data::bust_city_polygons_cache( $city_id );
+		}
+
+		$indicator_defs = class_exists( 'WSErgo_Indicators' ) ? count( WSErgo_Indicators::get_definitions() ) : 0;
+		$duration_total = round( microtime( true ) - $t_batch, 2 );
+
+		if ( class_exists( 'WSCOSM_Log' ) ) {
+			WSCOSM_Log::ergo_recalc(
+				'complete',
+				[
+					'processed'               => $processed,
+					'total'                   => $total,
+					'with_nonzero_dimensions' => $with_nonzero_dimensions,
+					'osm_raw_meta_updates'    => $osm_raw_writes,
+					'indicator_definitions'   => $indicator_defs,
+					'duration_total_sec'      => $duration_total,
+					'duration_total_human'    => WSCOSM_Log::format_duration_ru( $duration_total ),
+					'osm_prepare_sec'         => $osm_load_sec,
+				],
+				$city_id
+			);
+		}
+
+		return new WP_REST_Response(
+			[
+				'processed'               => $processed,
+				'total'                   => $total,
+				'city_id'                 => $city_id,
+				'with_nonzero_dimensions' => $with_nonzero_dimensions,
+				'indicator_definitions'   => $indicator_defs,
+				'osm_raw_meta_updates'    => $osm_raw_writes,
+				'duration_sec'            => $duration_total,
+				'duration_human'          => class_exists( 'WSCOSM_Log' ) ? WSCOSM_Log::format_duration_ru( $duration_total ) : '',
+			],
+			200
+		);
 	}
 
 	/**
@@ -654,13 +1303,16 @@ class WSCOSM_REST {
 	 * @param array<int, mixed> $features GeoJSON Feature objects.
 	 * @return array{saved:int,deleted:int,skipped:int,errors:array<int, string>}
 	 */
-	private static function ingest_generated_yard_features( int $city_id, array $features, bool $replace_existing ): array {
+	private static function ingest_generated_yard_features( int $city_id, array $features, bool $replace_existing, ?string $progress_id = null ): array {
 		$saved        = 0;
 		$deleted      = 0;
 		$skipped      = 0;
 		$errors       = [];
 		$prev_suspend = WSErgo_CPT::$suspend_autorecalc;
 		WSErgo_CPT::$suspend_autorecalc = true;
+
+		$save_total   = count( $features );
+		$tick_every   = max( 1, (int) min( 50, ceil( max( $save_total, 1 ) / 60 ) ) );
 
 		try {
 			if ( $replace_existing ) {
@@ -703,7 +1355,7 @@ class WSCOSM_REST {
 
 				$title = sanitize_text_field( (string) ( $props['title'] ?? '' ) );
 				if ( $title === '' ) {
-					$name = sanitize_text_field( (string) ( $props['name'] ?? '' ) );
+					$name  = sanitize_text_field( (string) ( $props['name'] ?? '' ) );
 					$title = $name !== '' ? $name : sprintf(
 						/* translators: %s: building object id (OSM ref or raster identifier). */
 						__( 'Generated yard %s', 'worldstat-courtyard-osm' ),
@@ -762,9 +1414,35 @@ class WSCOSM_REST {
 				}
 
 				++$saved;
+
+				if ( is_string( $progress_id ) && strlen( $progress_id ) === 32 && 0 === $saved % $tick_every ) {
+					self::scan_progress_set_long(
+						$progress_id,
+						[
+							'phase'   => 'saving',
+							'total'   => $save_total,
+							'current' => $saved,
+							'saved'   => $saved,
+							'message' => '',
+						]
+					);
+				}
 			}
 		} finally {
 			WSErgo_CPT::$suspend_autorecalc = $prev_suspend;
+		}
+
+		if ( is_string( $progress_id ) && strlen( $progress_id ) === 32 && $save_total > 0 ) {
+			self::scan_progress_set_long(
+				$progress_id,
+				[
+					'phase'   => 'saving',
+					'total'   => $save_total,
+					'current' => $saved,
+					'saved'   => $saved,
+					'message' => '',
+				]
+			);
 		}
 
 		if ( class_exists( 'WSErgo_Data' ) ) {
@@ -795,10 +1473,6 @@ class WSCOSM_REST {
 				'compare' => 'EXISTS',
 			],
 		];
-		/**
-		 * Optional: widen “replace dataset” deletes (never delete unrelated yards unless they match WP_Query below).
-		 */
-		$generated_conditions = apply_filters( 'wscosm_territory_replace_conditions', $generated_conditions, $city_id );
 
 		do {
 			$q = new WP_Query(
@@ -833,9 +1507,6 @@ class WSCOSM_REST {
 		return $deleted;
 	}
 
-	/**
-	 * Deletes plugin-generated yards that lack wscosm_voronoi_object_key but match known auto-generated title prefixes.
-	 */
 	private static function delete_generated_yards_by_legacy_title( int $city_id ): int {
 		if ( ! class_exists( 'WSErgo_CPT' ) ) {
 			return 0;
@@ -895,8 +1566,6 @@ class WSCOSM_REST {
 	}
 
 	/**
-	 * Title prefixes used by auto-generated yard posts without meta object_key (legacy saves).
-	 *
 	 * @return array<int, string>
 	 */
 	private static function legacy_generated_yard_title_prefixes( int $city_id ): array {
@@ -1002,4 +1671,5 @@ class WSCOSM_REST {
 		}
 		return true;
 	}
+
 }

@@ -9,7 +9,7 @@ The plugin shows courtyard-related layers on WorldStat city and country views:
 - saved courtyard/building polygons from WorldStat Ergonomics;
 - OpenStreetMap buildings and building parts;
 - benches, street lamps, waste baskets, playgrounds, paths, and green areas;
-- bounded Voronoi courtyard previews generated from saved OSM buildings;
+- simple courtyard buffer zone around selected building contour;
 - optional yard ergonomics popups for building objects;
 - layer controls and building-type legends in Leaflet.
 
@@ -37,9 +37,9 @@ The important behavior is:
 5. The server normalizes the bbox, queries Overpass, converts the response to GeoJSON, and upserts features into the database.
 6. Future `source=local` requests load those saved objects.
 
-## Voronoi Courtyards
+## Building Buffer Courtyard
 
-The country tab can build non-overlapping courtyard previews from visible saved OSM buildings. `building:part` objects are ignored as seeds so one building is not split into artificial yards. The generated cells are clipped to each building bbox expanded by about 50 meters. Authorized users can save the preview into WorldStat Ergonomics as `wsp_yard` posts; later page loads read those polygons through the existing `wsergo/v1` GeoJSON endpoint.
+In the country tab, each selected building can open a courtyard zone calculated as a buffer from the building contour. The radius is controlled by plugin settings (`wscosm_courtyard_buffer_radius_m`, default 35 m). The frontend uses the single-building endpoint and redraws only the selected zone and object list.
 
 ## Repository Layout
 
@@ -70,7 +70,7 @@ readme.txt
 - `GET /wp-json/wscosm/v1/city/{id}/features`
 - `GET /wp-json/wscosm/v1/scan-progress`
 - `GET /wp-json/wscosm/v1/city/{id}/yard-ergo-at`
-- `POST /wp-json/wscosm/v1/city/{id}/voronoi-yards`
+- `POST /wp-json/wscosm/v1/city/{id}/building-buffer-zone`
 
 See [REST API docs](docs/rest-api.md) for parameters and examples.
 
@@ -102,6 +102,7 @@ Common filters:
 Common option:
 
 - `wscosm_radius_km`
+- `wscosm_courtyard_buffer_radius_m`
 
 ## Development Checks
 

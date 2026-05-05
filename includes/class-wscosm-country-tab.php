@@ -66,12 +66,28 @@ class WSCOSM_Country_Tab {
 		}
 
 		$city_iso = strtoupper( (string) get_post_meta( $city_id, 'wscity_country_iso2', true ) );
+		$lat = (float) get_post_meta( $city_id, 'wscity_lat', true );
+		$lng = (float) get_post_meta( $city_id, 'wscity_lng', true );
+		$seed = self::city_seed_meta_by_title( (string) get_the_title( $city_id ) );
+		if ( is_array( $seed ) ) {
+			$seed_iso = strtoupper( (string) ( $seed['iso2'] ?? '' ) );
+			if ( $seed_iso !== '' && ( $city_iso === '' || ( $city_iso !== $seed_iso && $seed_iso === $iso2 ) ) ) {
+				$city_iso = $seed_iso;
+				update_post_meta( $city_id, 'wscity_country_iso2', $city_iso );
+			}
+			if ( ! $lat && isset( $seed['lat'] ) ) {
+				$lat = (float) $seed['lat'];
+				update_post_meta( $city_id, 'wscity_lat', $lat );
+			}
+			if ( ! $lng && isset( $seed['lng'] ) ) {
+				$lng = (float) $seed['lng'];
+				update_post_meta( $city_id, 'wscity_lng', $lng );
+			}
+		}
 		if ( $city_iso !== $iso2 ) {
 			wp_send_json_error( [ 'message' => 'country_mismatch' ] );
 		}
 
-		$lat = (float) get_post_meta( $city_id, 'wscity_lat', true );
-		$lng = (float) get_post_meta( $city_id, 'wscity_lng', true );
 		if ( ! $lat || ! $lng ) {
 			wp_send_json_error( [ 'message' => 'no_coords' ] );
 		}
@@ -90,8 +106,14 @@ class WSCOSM_Country_Tab {
 		$osm_count      = class_exists( 'WSCOSM_Feature_Store' ) ? WSCOSM_Feature_Store::count_for_city( $city_id ) : 0;
 		$osm_buildings_count = class_exists( 'WSCOSM_Feature_Store' ) ? WSCOSM_Feature_Store::count_buildings_for_city( $city_id ) : 0;
 		$yard_ergo_url  = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/yard-ergo-at' );
-		$voronoi_url    = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/voronoi-yards' );
-		$territory_job_url = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/territory-jobs' );
+		$building_buffer_url = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/building-buffer-zone' );
+		$generate_buffer_yards_url = rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/generate-buffer-yards' );
+		$courtyard_radius_m  = (float) get_option( 'wscosm_courtyard_buffer_radius_m', 35 );
+		$courtyard_radius_m  = max( 5.0, min( 200.0, $courtyard_radius_m ) );
+		$can_recalc_ergo = class_exists( 'WSCOSM_REST' ) && WSCOSM_REST::can_live_overpass( $city_id );
+		$recalc_ergo_url = ( class_exists( 'WSErgo_CPT' ) && class_exists( 'WSErgo_Calculator' ) && $can_recalc_ergo )
+			? rest_url( WSCOSM_REST::NS . '/city/' . $city_id . '/recalculate-yards-ergo' )
+			: '';
 
 		$chart  = class_exists( 'WSErgo_Model' )
 			? self::build_chart_payload( array_fill_keys( WSErgo_Model::DIMENSION_KEYS, null ) )
@@ -110,10 +132,11 @@ class WSCOSM_Country_Tab {
 				'yardsUrl'        => $yards_url,
 				'featuresUrl'     => $features_url,
 				'yardErgoAtUrl'   => $yard_ergo_url,
-				'voronoiSaveUrl'  => $voronoi_url,
-				'territoryJobUrl' => $territory_job_url,
+				'buildingBufferZoneUrl' => $building_buffer_url,
+				'generateBufferYardsUrl' => $generate_buffer_yards_url,
+				'courtyardBufferRadiusM' => $courtyard_radius_m,
+				'recalculateErgoUrl' => $recalc_ergo_url,
 				'canScanOsm'      => class_exists( 'WSCOSM_REST' ) ? WSCOSM_REST::can_live_overpass( $city_id ) : false,
-				'canSaveVoronoi'  => class_exists( 'WSCOSM_REST' ) && class_exists( 'WSErgo_CPT' ) ? WSCOSM_REST::can_live_overpass( $city_id ) : false,
 				'hasErgo'         => class_exists( 'WSErgo_CPT' ),
 				'tileUrl'     => 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
 				'tileAttrib'  => '&copy; OpenStreetMap &copy; CARTO',
@@ -230,12 +253,35 @@ class WSCOSM_Country_Tab {
 	}
 
 	/**
+	 * Seed coordinates/ISO for known city names when metadata is missing.
+	 *
+	 * @return array{iso2:string,lat:float,lng:float}|null
+	 */
+	private static function city_seed_meta_by_title( string $title ): ?array {
+		$key = self::normalize_city_title_key( $title );
+		$map = [
+			'bryansk' => [ 'iso2' => 'RU', 'lat' => 53.243562, 'lng' => 34.363407 ],
+			'брянск'  => [ 'iso2' => 'RU', 'lat' => 53.243562, 'lng' => 34.363407 ],
+		];
+		return $map[ $key ] ?? null;
+	}
+
+	private static function normalize_city_title_key( string $title ): string {
+		$raw = trim( strtolower( remove_accents( wp_strip_all_tags( $title ) ) ) );
+		$raw = preg_replace( '/\s+/u', ' ', $raw );
+		$raw = preg_replace( '/^(г\\.?|город)\s+/u', '', (string) $raw );
+		return trim( (string) $raw );
+	}
+
+	/**
 	 * Скрипты страницы страны (Leaflet уже в платформе).
 	 */
 	public static function enqueue_country_assets(): void {
 		if ( ! class_exists( 'WorldStat_Country_CPT' ) || ! is_singular( WorldStat_Country_CPT::SLUG ) ) {
 			return;
 		}
+
+		wp_enqueue_style( 'dashicons' );
 
 		wp_enqueue_style(
 			'wscosm-city-map',
@@ -284,20 +330,15 @@ class WSCOSM_Country_Tab {
 					'scanProgressDone'    => __( 'Готово', 'worldstat-courtyard-osm' ),
 					'scanProgressError'   => __( 'Ошибка сохранения', 'worldstat-courtyard-osm' ),
 					'scanProgressCounts'  => __( 'Записей в базу', 'worldstat-courtyard-osm' ),
-					'buildVoronoi'    => __( 'Построить территории', 'worldstat-courtyard-osm' ),
-					'buildVoronoiHint'=> __( 'Придомовые территории по растру (ближайшее здание, ограничение по расстоянию и препятствиям OSM).', 'worldstat-courtyard-osm' ),
-					'saveVoronoi'     => __( 'Сохранить участки', 'worldstat-courtyard-osm' ),
-					'saveVoronoiHint' => __( 'Сохранить построенные raster-территории в базу WorldStat Ergonomics', 'worldstat-courtyard-osm' ),
-					'voronoiLayer'    => __( 'Raster allocation: предпросмотр', 'worldstat-courtyard-osm' ),
-					'voronoiNoBuildings' => __( 'Не удалось построить расчетные придомовые территории: в базе города нет подходящих контуров зданий или свободной территории вокруг них.', 'worldstat-courtyard-osm' ),
-					'voronoiBuilding' => __( 'Построение raster allocation', 'worldstat-courtyard-osm' ),
-					'voronoiReady'    => __( 'Raster-территории построены', 'worldstat-courtyard-osm' ),
-					'voronoiSaving'   => __( 'Сохранение участков', 'worldstat-courtyard-osm' ),
-					'voronoiSaved'    => __( 'Участки сохранены', 'worldstat-courtyard-osm' ),
-					'voronoiSaveDisabled' => __( 'Для сохранения нужен активный WorldStat Ergonomics и права редактирования города.', 'worldstat-courtyard-osm' ),
-					'voronoiRebuildAfterScan' => __( 'OSM обновлен. Постройте raster allocation заново, чтобы включить новые здания.', 'worldstat-courtyard-osm' ),
-					'voronoiError'    => __( 'Не удалось построить или сохранить raster-территории.', 'worldstat-courtyard-osm' ),
-					'territoryDebugLayer' => __( 'Отладка raster-территорий: сетка, назначения и препятствия', 'worldstat-courtyard-osm' ),
+					'openCourtyardZone' => __( 'Открыть придомовую территорию', 'worldstat-courtyard-osm' ),
+					'courtyardTitle'    => __( 'Выбранный дом', 'worldstat-courtyard-osm' ),
+					'courtyardRadius'   => __( 'Радиус буфера', 'worldstat-courtyard-osm' ),
+					'courtyardRecalc'   => __( 'Пересчитать зону', 'worldstat-courtyard-osm' ),
+					'courtyardObjects'  => __( 'Объекты в зоне', 'worldstat-courtyard-osm' ),
+					'courtyardZoneLayer' => __( 'Буферная придомовая зона', 'worldstat-courtyard-osm' ),
+					'courtyardNoBuilding' => __( 'Выберите дом на карте.', 'worldstat-courtyard-osm' ),
+					'courtyardNoObjects' => __( 'В этой зоне объекты не найдены.', 'worldstat-courtyard-osm' ),
+					'courtyardLoadError' => __( 'Не удалось построить придомовую зону.', 'worldstat-courtyard-osm' ),
 					'layerYards'      => __( 'Придомовые (база сайта)', 'worldstat-courtyard-osm' ),
 					'layerBench'      => __( 'Скамейки', 'worldstat-courtyard-osm' ),
 					'layerLight'      => __( 'Фонари', 'worldstat-courtyard-osm' ),
@@ -306,6 +347,25 @@ class WSCOSM_Country_Tab {
 					'layerBin'        => __( 'Урны', 'worldstat-courtyard-osm' ),
 					'layerGreen'      => __( 'Зелёные зоны', 'worldstat-courtyard-osm' ),
 					'layerCenter'     => __( 'Центр города', 'worldstat-courtyard-osm' ),
+					'generateBufferYards' => __( 'Создать придомовые зоны', 'worldstat-courtyard-osm' ),
+					'generateBufferYardsWorking' => __( 'Генерация придомовых зон…', 'worldstat-courtyard-osm' ),
+					'generateBufferYardsDone' => __( 'Сохранено зон', 'worldstat-courtyard-osm' ),
+					'generateBufferYardsError' => __( 'Не удалось создать придомовые зоны.', 'worldstat-courtyard-osm' ),
+					'bufferYardsProgressPrepare' => __( 'Подготовка…', 'worldstat-courtyard-osm' ),
+					'bufferYardsProgressBuffer' => __( 'Построение буферов', 'worldstat-courtyard-osm' ),
+					'bufferYardsProgressSaving' => __( 'Сохранение придомовых участков в базу', 'worldstat-courtyard-osm' ),
+					'bufferYardsProgressDone' => __( 'Готово', 'worldstat-courtyard-osm' ),
+					'bufferYardsProgressCounts' => __( '%1$d из %2$d', 'worldstat-courtyard-osm' ),
+					'recalcErgo'      => __( 'Расчёт эргономики', 'worldstat-courtyard-osm' ),
+					'recalcErgoWorking' => __( 'Пересчёт эргономики…', 'worldstat-courtyard-osm' ),
+					'recalcErgoDone'  => __( 'Пересчитано участков', 'worldstat-courtyard-osm' ),
+					'recalcErgoError' => __( 'Не удалось выполнить пересчёт эргономики.', 'worldstat-courtyard-osm' ),
+					'recalcErgoWithAxes' => __( 'С ненулевыми осями (0–100)', 'worldstat-courtyard-osm' ),
+					'recalcErgoDuration' => __( 'Длительность', 'worldstat-courtyard-osm' ),
+					'recalcErgoNoAxesHint' => __(
+						'Если оси пустые: для авто-расчёта по OSM в базе города должны быть сохранённые объекты (сканирование карты), id показателей должны совпадать с поддерживаемыми (расстояние до парковки/дороги/площадок, плотность фонарей в га двора, ширина path при tag width и др.). Гидранты и часть норм пока не извлекаются из текущего импорта OSM.',
+						'worldstat-courtyard-osm'
+					),
 				],
 			]
 		);

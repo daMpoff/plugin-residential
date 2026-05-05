@@ -15,6 +15,9 @@ class WSCOSM_Scan_Progress {
 
 	public const TTL = 300;
 
+	/** TTL для длинных задач (генерация буферных придомовых и т.п.), сек. */
+	public const TTL_LONG = 1200;
+
 	/**
 	 * @param mixed $raw Параметр из запроса.
 	 */
@@ -26,12 +29,13 @@ class WSCOSM_Scan_Progress {
 		return strlen( $id ) === 32 ? $id : '';
 	}
 
-	public static function set( string $id, array $data ): void {
+	public static function set( string $id, array $data, ?int $ttl_override = null ): void {
 		if ( strlen( $id ) !== 32 ) {
 			return;
 		}
 		$data['ts'] = time();
-		set_transient( self::TRANSIENT_PREFIX . $id, $data, self::TTL );
+		$ttl        = $ttl_override !== null ? max( 60, $ttl_override ) : self::TTL;
+		set_transient( self::TRANSIENT_PREFIX . $id, $data, $ttl );
 	}
 
 	/**

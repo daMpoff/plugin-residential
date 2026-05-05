@@ -1,6 +1,6 @@
-<?php
+﻿<?php
 /**
- * Админка: просмотр логов Courtyard OSM.
+ * Admin page: logs and plugin settings.
  *
  * @package WorldStatCourtyardOSM
  */
@@ -10,10 +10,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class WSCOSM_Admin {
+	private const OPT_BUFFER_RADIUS_M = 'wscosm_courtyard_buffer_radius_m';
 
 	public static function init(): void {
 		add_action( 'admin_menu', [ self::class, 'register_menu' ] );
-		add_action( 'admin_init', [ self::class, 'handle_clear_logs' ] );
+		add_action( 'admin_init', [ self::class, 'handle_post_actions' ] );
 	}
 
 	public static function register_menu(): void {
@@ -26,10 +27,21 @@ class WSCOSM_Admin {
 		);
 	}
 
-	public static function handle_clear_logs(): void {
+	public static function get_courtyard_buffer_radius_m(): float {
+		$v = (float) get_option( self::OPT_BUFFER_RADIUS_M, 35.0 );
+		return max( 5.0, min( 200.0, $v ) );
+	}
+
+	public static function handle_post_actions(): void {
 		if ( ! is_admin() || ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
+
+		if ( ! empty( $_POST['wscosm_save_settings'] ) ) {
+			self::handle_save_settings();
+			return;
+		}
+
 		if ( empty( $_POST['wscosm_clear_logs'] ) || empty( $_POST['_wpnonce'] ) ) {
 			return;
 		}
@@ -41,6 +53,20 @@ class WSCOSM_Admin {
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$wpdb->query( "DELETE FROM {$table}" );
 		wp_safe_redirect( add_query_arg( 'cleared', '1', admin_url( 'tools.php?page=wscosm-logs' ) ) );
+		exit;
+	}
+
+	private static function handle_save_settings(): void {
+		if ( empty( $_POST['_wpnonce'] ) ) {
+			return;
+		}
+		if ( ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['_wpnonce'] ) ), 'wscosm_save_settings' ) ) {
+			return;
+		}
+		$raw = isset( $_POST['wscosm_courtyard_buffer_radius_m'] ) ? (float) wp_unslash( $_POST['wscosm_courtyard_buffer_radius_m'] ) : 35.0;
+		$val = max( 5.0, min( 200.0, $raw ) );
+		update_option( self::OPT_BUFFER_RADIUS_M, $val, false );
+		wp_safe_redirect( add_query_arg( 'settings_saved', '1', admin_url( 'tools.php?page=wscosm-logs' ) ) );
 		exit;
 	}
 
@@ -77,6 +103,20 @@ class WSCOSM_Admin {
 		if ( isset( $_GET['cleared'] ) ) {
 			echo '<div class="notice notice-success"><p>' . esc_html__( 'Журнал очищен.', 'worldstat-courtyard-osm' ) . '</p></div>';
 		}
+		if ( isset( $_GET['settings_saved'] ) ) {
+			echo '<div class="notice notice-success"><p>' . esc_html__( 'Настройки сохранены.', 'worldstat-courtyard-osm' ) . '</p></div>';
+		}
+
+		$radius = self::get_courtyard_buffer_radius_m();
+		echo '<h2>' . esc_html__( 'Настройки буферной придомовой зоны', 'worldstat-courtyard-osm' ) . '</h2>';
+		echo '<form method="post" style="margin:1rem 0 1.25rem;">';
+		wp_nonce_field( 'wscosm_save_settings' );
+		echo '<input type="hidden" name="wscosm_save_settings" value="1" />';
+		echo '<label for="wscosm_courtyard_buffer_radius_m" style="display:inline-block;min-width:260px;">' . esc_html__( 'Радиус буфера вокруг дома (м)', 'worldstat-courtyard-osm' ) . '</label> ';
+		echo '<input type="number" step="1" min="5" max="200" id="wscosm_courtyard_buffer_radius_m" name="wscosm_courtyard_buffer_radius_m" value="' . esc_attr( (string) round( $radius ) ) . '" />';
+		echo '<p class="description" style="margin-top:6px;">' . esc_html__( 'По умолчанию 35 м. Применяется во фронтовой вкладке при расчете придомовой зоны для выбранного дома.', 'worldstat-courtyard-osm' ) . '</p>';
+		submit_button( __( 'Сохранить настройки', 'worldstat-courtyard-osm' ), 'primary', 'submit', false );
+		echo '</form>';
 
 		echo '<p>' . esc_html__( 'Ошибки Overpass, REST и сохранения объектов пишутся в таблицу БД; уровни error и warning дублируются в PHP error_log при включённом фильтре.', 'worldstat-courtyard-osm' ) . '</p>';
 		echo '<p><strong>' . esc_html__( 'Сохранённых объектов OSM (для эргономики):', 'worldstat-courtyard-osm' ) . '</strong> ' . esc_html( (string) $objects_total ) . '</p>';
